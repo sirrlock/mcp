@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.js.map
+
+# IDE
+.idea/
+
+# macOS
+.DS_Store
+
+# Local dev
+.claude/
+.worktrees/
+.playwright-mcp/
