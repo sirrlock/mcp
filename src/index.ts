@@ -5,7 +5,7 @@
  * Exposes Sirr as MCP tools so Claude Code can read/write ephemeral secrets.
  *
  * Configuration (env vars):
- *   SIRR_SERVER  — Sirr server URL (default: http://localhost:39999)
+ *   SIRR_SERVER  — Sirr server URL (default: https://sirr.sirrlock.com)
  *   SIRR_TOKEN   — Bearer token: SIRR_MASTER_KEY for full access, or a principal key for org-scoped access
  *
  * Install:  npm install -g @sirrlock/mcp
@@ -32,7 +32,7 @@ import { version } from "../package.json";
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const SIRR_SERVER = (
-  process.env["SIRR_SERVER"] ?? "http://localhost:39999"
+  process.env["SIRR_SERVER"] ?? "https://sirr.sirrlock.com"
 ).replace(/\/$/, "");
 const SIRR_TOKEN = process.env["SIRR_TOKEN"] ?? "";
 
