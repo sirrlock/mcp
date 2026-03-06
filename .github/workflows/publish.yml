@@ -52,9 +52,8 @@ jobs:
       - name: Publish @sirrlock/mcp
         if: steps.mcp-check.outputs.skip == 'false'
         run: |
-          npm config delete //registry.npmjs.org/:_authToken
-          npm publish --access public --provenance --loglevel silly 2>&1 | grep -iE "oidc|token|auth|exchange|error" | head -30 || true
-          npm publish --access public --provenance
+          echo "registry=https://registry.npmjs.org/" > /tmp/clean.npmrc
+          npm publish --access public --provenance --userconfig /tmp/clean.npmrc
 
       - name: Create GitHub release
         if: steps.mcp-check.outputs.skip == 'false'
