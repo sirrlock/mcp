@@ -53,7 +53,9 @@ jobs:
         if: steps.mcp-check.outputs.skip == 'false'
         run: |
           echo "registry=https://registry.npmjs.org/" > /tmp/clean.npmrc
-          npm publish --access public --provenance --userconfig /tmp/clean.npmrc
+          npm publish --access public --provenance --userconfig /tmp/clean.npmrc || true
+          echo "=== npm debug log ==="
+          cat /home/runner/.npm/_logs/*.log 2>/dev/null | grep -iE "oidc|token|auth|cred|login|verbose|error" | tail -40
 
       - name: Create GitHub release
         if: steps.mcp-check.outputs.skip == 'false'
