@@ -40,22 +40,13 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Debug OIDC environment
-        run: |
-          echo "npm: $(npm --version)"
-          echo "NPM_CONFIG_USERCONFIG: ${NPM_CONFIG_USERCONFIG}"
-          echo "npmrc contents (redacted):"
-          cat "${NPM_CONFIG_USERCONFIG}" 2>/dev/null | sed 's/_authToken=.*/[redacted]/' || echo "(no npmrc)"
-          echo "OIDC URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          echo "OIDC token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
-
       - name: Publish @sirrlock/mcp
         if: steps.mcp-check.outputs.skip == 'false'
         run: |
           echo "registry=https://registry.npmjs.org/" > /tmp/clean.npmrc
-          npm publish --access public --provenance --userconfig /tmp/clean.npmrc || true
-          echo "=== npm debug log ==="
-          cat /home/runner/.npm/_logs/*.log 2>/dev/null | grep -iE "oidc|token|auth|cred|login|verbose|error" | tail -40
+          npm publish --access public --provenance --userconfig /tmp/clean.npmrc
+        env:
+          NODE_AUTH_TOKEN: ""
 
       - name: Create GitHub release
         if: steps.mcp-check.outputs.skip == 'false'
