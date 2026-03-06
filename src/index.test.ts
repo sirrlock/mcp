@@ -143,7 +143,7 @@ beforeAll(async () => {
   await mock.start();
 
   mcpProc = spawn("node", [MCP_BIN], {
-    env: { ...process.env, SIRR_SERVER: mock.url, SIRR_TOKEN: TOKEN },
+    env: { ...process.env, SIRR_SERVER: mock.url, SIRRLOCK_URL: mock.url, SIRR_TOKEN: TOKEN },
     stdio: ["pipe", "pipe", "pipe"],
   });
   mcpProc.stderr!.on("data", (d: Buffer) => {
@@ -639,6 +639,25 @@ describe("sirr_role_delete", () => {
     const text = await client.call("sirr_role_delete", { org_id: "org_1", role_name: "gone" });
     expect(text).toContain("not found");
     expect(text).not.toContain("Error:");
+  });
+});
+
+// ── share_secret ──────────────────────────────────────────────────────────────
+
+describe("share_secret", () => {
+  it("returns a sirrlock share URL on success", async () => {
+    mock.next(200, { key: "a3f9c2d1e4b5" });
+    const text = await client.call("share_secret", { value: "hunter2" });
+    expect(mock.lastRequest?.method).toBe("POST");
+    expect(mock.lastRequest?.path).toBe("/api/public/secret");
+    expect((mock.lastRequest?.body as Record<string, unknown>)["value"]).toBe("hunter2");
+    expect(text).toContain("sirrlock.com/s/a3f9c2d1e4b5");
+  });
+
+  it("returns an error when the upstream call fails", async () => {
+    mock.next(503, { error: "unavailable" });
+    const text = await client.call("share_secret", { value: "hunter2" });
+    expect(text).toContain("Error:");
   });
 });
 

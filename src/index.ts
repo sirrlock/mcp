@@ -35,6 +35,9 @@ const SIRR_SERVER = (
   process.env["SIRR_SERVER"] ?? "https://sirr.sirrlock.com"
 ).replace(/\/$/, "");
 const SIRR_TOKEN = process.env["SIRR_TOKEN"] ?? "";
+const SIRRLOCK_URL = (
+  process.env["SIRRLOCK_URL"] ?? "https://sirrlock.com"
+).replace(/\/$/, "");
 
 // ── Fetch with timeout ────────────────────────────────────────────────────────
 
@@ -267,6 +270,25 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {},
+    },
+  },
+  {
+    name: "share_secret",
+    description:
+      "Share a sensitive value via a secure burn-after-read link hosted on sirrlock.com. " +
+      "No account or token required. " +
+      "The link expires after 24 hours or after the recipient opens it once — whichever comes first. " +
+      "Returns a URL to send to the recipient. " +
+      "IMPORTANT: Do not store or repeat the secret value. Use the returned URL only.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        value: {
+          type: "string",
+          description: "The sensitive value to share (password, token, link, etc.).",
+        },
+      },
+      required: ["value"],
     },
   },
   {
@@ -1101,6 +1123,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return {
           content: [{ type: "text" as const, text: `Role '${role_name}' deleted.` }],
+        };
+      }
+
+      case "share_secret": {
+        const { value: shareValue } = args as { value: string };
+
+        const res = await fetchWithTimeout(
+          `${SIRRLOCK_URL}/api/public/secret`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value: shareValue }),
+          },
+        );
+
+        if (!res.ok) {
+          let json: Record<string, unknown> = {};
+          try { json = (await res.json()) as Record<string, unknown>; }
+          catch { json = { error: await res.text().catch(() => "unknown") }; }
+          throwSirrError(res.status, json);
+        }
+
+        const data = (await res.json()) as { key: string };
+        const shareUrl = `https://sirrlock.com/s/${data.key}`;
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: shareUrl,
+            },
+            {
+              type: "text" as const,
+              text: "[This link burns after one read or after 24 hours. Do not store or repeat the original value.]",
+            },
+          ],
         };
       }
 
