@@ -42,10 +42,12 @@ jobs:
 
       - name: Debug OIDC environment
         run: |
-          echo "npm version: $(npm --version)"
-          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL != '' }}"
-          echo "npmrc contents:"
-          cat ~/.npmrc 2>/dev/null || echo "(no .npmrc)"
+          echo "npm: $(npm --version)"
+          echo "NPM_CONFIG_USERCONFIG: ${NPM_CONFIG_USERCONFIG}"
+          echo "npmrc contents (redacted):"
+          cat "${NPM_CONFIG_USERCONFIG}" 2>/dev/null | sed 's/_authToken=.*/[redacted]/' || echo "(no npmrc)"
+          echo "OIDC URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
 
       - name: Publish @sirrlock/mcp
         if: steps.mcp-check.outputs.skip == 'false'
