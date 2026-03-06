@@ -53,6 +53,7 @@ jobs:
         if: steps.mcp-check.outputs.skip == 'false'
         run: |
           npm config delete //registry.npmjs.org/:_authToken
+          npm publish --access public --provenance --loglevel silly 2>&1 | grep -iE "oidc|token|auth|exchange|error" | head -30 || true
           npm publish --access public --provenance
 
       - name: Create GitHub release
