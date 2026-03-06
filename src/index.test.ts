@@ -651,7 +651,8 @@ describe("share_secret", () => {
     expect(mock.lastRequest?.method).toBe("POST");
     expect(mock.lastRequest?.path).toBe("/api/public/secret");
     expect((mock.lastRequest?.body as Record<string, unknown>)["value"]).toBe("hunter2");
-    expect(text).toContain("sirrlock.com/s/a3f9c2d1e4b5");
+    expect(text).toContain("/s/a3f9c2d1e4b5");
+    expect(text).toContain("burns after one read");
   });
 
   it("returns an error when the upstream call fails", async () => {

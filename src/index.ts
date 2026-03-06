@@ -1149,16 +1149,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const shareUrl = `${SIRRLOCK_URL}/s/${data.key}`;
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: shareUrl,
-            },
-            {
-              type: "text" as const,
-              text: "[This link burns after one read or after 24 hours. Do not store or repeat the original value.]",
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: `${shareUrl}\n\n[This link burns after one read or after 24 hours. Do not store or repeat the original value.]`,
+          }],
         };
       }
 
