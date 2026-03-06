@@ -1146,7 +1146,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const data = (await res.json()) as { key: string };
-        const shareUrl = `https://sirrlock.com/s/${data.key}`;
+        const shareUrl = `${SIRRLOCK_URL}/s/${data.key}`;
 
         return {
           content: [
