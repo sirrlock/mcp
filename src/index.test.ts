@@ -196,31 +196,51 @@ describe("check_secret", () => {
 // ── get_secret ────────────────────────────────────────────────────────────────
 
 describe("get_secret", () => {
-  it("GET /secrets/{key} and returns value", async () => {
-    mock.next(200, { value: "supersecret" });
-    const text = await client.call("get_secret", { key: "MY_KEY" });
+  it("GET /secrets/{id} (public dead drop) and returns value", async () => {
+    mock.next(200, { id: "abc123", value: "supersecret" });
+    const text = await client.call("get_secret", { id: "abc123" });
     expect(mock.lastRequest?.method).toBe("GET");
-    expect(mock.lastRequest?.path).toBe("/secrets/MY_KEY");
+    expect(mock.lastRequest?.path).toBe("/secrets/abc123");
     expect(text).toBe("supersecret");
   });
 
-  it("404 → not-found message, not an error", async () => {
+  it("GET /orgs/{org}/secrets/{key} (org-scoped) and returns value", async () => {
+    mock.next(200, { id: "hex64id", value: "orgsecret" });
+    const text = await client.call("get_secret", { key: "MY_KEY", org: "my-org" });
+    expect(mock.lastRequest?.method).toBe("GET");
+    expect(mock.lastRequest?.path).toBe("/orgs/my-org/secrets/MY_KEY");
+    expect(text).toBe("orgsecret");
+  });
+
+  it("error if neither id nor key provided", async () => {
+    const text = await client.call("get_secret", {});
+    expect(text).toContain("Error:");
+    expect(text).toContain("id");
+  });
+
+  it("error if key provided without org (and no SIRR_ORG env)", async () => {
+    const text = await client.call("get_secret", { key: "MY_KEY" });
+    expect(text).toContain("Error:");
+    expect(text).toContain("org");
+  });
+
+  it("404 → not-found message, not an error (public id)", async () => {
     mock.next(404, { error: "not found" });
-    const text = await client.call("get_secret", { key: "MISSING" });
+    const text = await client.call("get_secret", { id: "MISSING" });
     expect(text).toContain("not found");
     expect(text).not.toContain("Error:");
   });
 
-  it("410 → not-found message (burned secret)", async () => {
+  it("410 → not-found message (burned public secret)", async () => {
     mock.next(410, { error: "gone" });
-    const text = await client.call("get_secret", { key: "BURNED" });
+    const text = await client.call("get_secret", { id: "BURNED" });
     expect(text).toContain("not found");
     expect(text).not.toContain("Error:");
   });
 
-  it("403 → Error: in output", async () => {
+  it("403 → Error: in output (public id)", async () => {
     mock.next(403, { error: "forbidden" });
-    const text = await client.call("get_secret", { key: "DENIED" });
+    const text = await client.call("get_secret", { id: "DENIED" });
     expect(text).toContain("Error:");
     expect(text).toContain("403");
   });
@@ -229,40 +249,71 @@ describe("get_secret", () => {
 // ── push_secret ───────────────────────────────────────────────────────────────
 
 describe("push_secret", () => {
-  it("POST /secrets with key and value", async () => {
-    mock.next(201, { key: "FOO" });
-    await client.call("push_secret", { key: "FOO", value: "bar" });
+  it("POST /secrets with value only (no key)", async () => {
+    mock.next(201, { id: "deadbeef01020304" });
+    const text = await client.call("push_secret", { value: "bar" });
     expect(mock.lastRequest?.method).toBe("POST");
     expect(mock.lastRequest?.path).toBe("/secrets");
-    expect((mock.lastRequest?.body as Record<string, unknown>)["key"]).toBe("FOO");
+    expect((mock.lastRequest?.body as Record<string, unknown>)["key"]).toBeUndefined();
     expect((mock.lastRequest?.body as Record<string, unknown>)["value"]).toBe("bar");
+    expect(text).toContain("deadbeef01020304");
+  });
+
+  it("returns URL in output", async () => {
+    mock.next(201, { id: "abc123" });
+    const text = await client.call("push_secret", { value: "v" });
+    expect(text).toContain("/s/abc123");
   });
 
   it("reports TTL in output when ttl_seconds provided", async () => {
-    mock.next(201, { key: "TTL_KEY" });
-    const text = await client.call("push_secret", { key: "TTL_KEY", value: "v", ttl_seconds: 3600 });
+    mock.next(201, { id: "ttlid" });
+    const text = await client.call("push_secret", { value: "v", ttl_seconds: 3600 });
     expect(text).toContain("1h");
   });
 
   it("reports burn limit in output when max_reads provided", async () => {
-    mock.next(201, { key: "BURN_KEY" });
-    const text = await client.call("push_secret", { key: "BURN_KEY", value: "v", max_reads: 1 });
+    mock.next(201, { id: "burnid" });
+    const text = await client.call("push_secret", { value: "v", max_reads: 1 });
     expect(text).toContain("1 read(s)");
   });
 
   it("does not send null for omitted optional fields", async () => {
-    mock.next(201, { key: "BARE" });
-    await client.call("push_secret", { key: "BARE", value: "v" });
+    mock.next(201, { id: "bareid" });
+    await client.call("push_secret", { value: "v" });
     const body = mock.lastRequest?.body as Record<string, unknown>;
     expect(body["ttl_seconds"]).toBeUndefined();
     expect(body["max_reads"]).toBeUndefined();
+    expect(body["key"]).toBeUndefined();
+  });
+});
+
+// ── set_secret ────────────────────────────────────────────────────────────────
+
+describe("set_secret", () => {
+  it("POST /orgs/{org}/secrets with key and value", async () => {
+    mock.next(201, { key: "FOO", id: "hexid001" });
+    const text = await client.call("set_secret", { org: "my-org", key: "FOO", value: "bar" });
+    expect(mock.lastRequest?.method).toBe("POST");
+    expect(mock.lastRequest?.path).toBe("/orgs/my-org/secrets");
+    expect((mock.lastRequest?.body as Record<string, unknown>)["key"]).toBe("FOO");
+    expect((mock.lastRequest?.body as Record<string, unknown>)["value"]).toBe("bar");
+    expect(text).toContain("FOO");
+    expect(text).toContain("hexid001");
   });
 
-  it("sends delete=false for seal-on-burn behavior", async () => {
-    mock.next(201, { key: "SEAL" });
-    const text = await client.call("push_secret", { key: "SEAL", value: "v", max_reads: 3, delete: false });
-    expect((mock.lastRequest?.body as Record<string, unknown>)["delete"]).toBe(false);
-    expect(text).toContain("Sealed on burn");
+  it("409 → conflict message with isError", async () => {
+    mock.next(409, { error: "conflict" });
+    const text = await client.call("set_secret", { org: "my-org", key: "FOO", value: "bar" });
+    expect(text).toContain("Conflict");
+    expect(text).toContain("FOO");
+    expect(text).toContain("patch_secret");
+  });
+
+  it("401 → Error: in output", async () => {
+    mock.next(401, { error: "unauthorized" });
+    const text = await client.call("set_secret", { org: "my-org", key: "FOO", value: "bar" });
+    expect(text).toContain("Error:");
+    expect(text).toContain("401");
   });
 });
 

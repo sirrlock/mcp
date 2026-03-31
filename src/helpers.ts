@@ -22,6 +22,17 @@ export function secretsPath(key?: string): string {
   return key ? `${base}/${key}` : base;
 }
 
+/** Always routes to the public (unauthenticated) secrets endpoint. */
+export function publicSecretsPath(id?: string): string {
+  return id ? `/secrets/${id}` : '/secrets';
+}
+
+/** Always routes to the org-scoped secrets endpoint. Throws if no org. */
+export function orgSecretsPath(org: string, key?: string): string {
+  const base = `/orgs/${org}/secrets`;
+  return key ? `${base}/${key}` : base;
+}
+
 export function auditPath(): string {
   const org = process.env.SIRR_ORG;
   return org ? `/orgs/${org}/audit` : '/audit';

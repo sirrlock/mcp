@@ -85,7 +85,7 @@ const STATUS_HINTS: Record<number, string> = {
   402: "Free tier limit reached. See sirr.dev/errors#402",
   403: "This token does not have permission for this operation. See sirr.dev/errors#403",
   404: "Resource not found, expired, or burned. See sirr.dev/errors#404",
-  409: "Conflict — the resource has dependencies that must be removed first. See sirr.dev/errors#409",
+  409: "Conflict — a secret with that key already exists in this org. Use patch_secret to update it. See sirr.dev/errors#409",
   500: "Server-side error. See sirr.dev/errors#500",
 };
 
@@ -122,7 +122,7 @@ async function sirrRequest<T>(
   return (await res.json()) as T;
 }
 
-import { parseKeyRef, formatTtl, secretsPath, auditPath, webhooksPath, prunePath } from "./helpers";
+import { parseKeyRef, formatTtl, secretsPath, publicSecretsPath, orgSecretsPath, auditPath, webhooksPath, prunePath } from "./helpers";
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -130,22 +130,32 @@ const TOOLS: Tool[] = [
   {
     name: "get_secret",
     description:
-      "Retrieve a secret from the Sirr vault by key name. " +
-      "The secret's read counter is incremented — if it was set with max_reads=1 it will be deleted after this call. " +
+      "Retrieve a secret from Sirr. " +
+      "Two modes: (1) Public dead drop — provide 'id' (hex64 returned by push_secret). " +
+      "Fetches from GET /secrets/{id}. The read counter is incremented — if max_reads=1 the secret burns after this call. " +
+      "(2) Org-scoped — provide 'key' and 'org' to fetch a named secret from an organization's vault. " +
       "Returns null if the secret does not exist, has expired, or has been burned. " +
-      "Accepts bare key names, 'sirr:KEYNAME' references, or 'KEYNAME#id' format. " +
       "IMPORTANT: Do not store, log, memorize, or repeat the returned secret value beyond its immediate use. " +
       "Treat it as ephemeral — use it once for its intended purpose and discard it.",
     inputSchema: {
       type: "object" as const,
       properties: {
+        id: {
+          type: "string",
+          description:
+            "Public secret ID (hex64) returned by push_secret. Use for public dead-drop retrieval.",
+        },
         key: {
           type: "string",
           description:
-            "Secret key name. Accepts 'sirr:KEYNAME', 'KEYNAME#id', or bare key name.",
+            "Secret key name for org-scoped retrieval. Accepts 'sirr:KEYNAME', 'KEYNAME#id', or bare key name.",
+        },
+        org: {
+          type: "string",
+          description:
+            "Organization ID for org-scoped retrieval. Required when using 'key'.",
         },
       },
-      required: ["key"],
     },
   },
   {
@@ -169,20 +179,18 @@ const TOOLS: Tool[] = [
   {
     name: "push_secret",
     description:
-      "Store a secret in the Sirr vault. Optionally set a TTL (seconds) and/or a max read limit. " +
-      "Use max_reads=1 for one-time credentials that burn after first access. " +
-      "Use ttl_seconds for time-expiring secrets. " +
-      "By default, the secret is deleted when burned. Set delete=false to seal it instead (returns 410 on subsequent reads).",
+      "Push a secret as an anonymous public dead drop — no key, no org required. " +
+      "Returns an opaque ID and a one-time URL. Share the URL; the recipient opens it once and it burns. " +
+      "Optionally set a TTL (seconds) and/or max read limit. " +
+      "Use max_reads=1 (default) for one-time credentials that burn after first access. " +
+      "Use ttl_seconds to add a time-based expiry. " +
+      "IMPORTANT: Do not store, log, or repeat the pushed value after the call.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        key: {
-          type: "string",
-          description: "Key name to store the secret under.",
-        },
         value: {
           type: "string",
-          description: "Secret value.",
+          description: "Secret value to push.",
         },
         ttl_seconds: {
           type: "number",
@@ -191,15 +199,36 @@ const TOOLS: Tool[] = [
         },
         max_reads: {
           type: "number",
-          description: "Optional maximum read count. Set to 1 for a one-time secret.",
-        },
-        delete: {
-          type: "boolean",
-          description:
-            "If false, the secret is sealed (returns 410) instead of deleted when burned. Default: true.",
+          description: "Optional maximum read count. Default: 1 (burn after first read).",
         },
       },
-      required: ["key", "value"],
+      required: ["value"],
+    },
+  },
+  {
+    name: "set_secret",
+    description:
+      "Store a named secret in an organization's vault (org-scoped). " +
+      "Requires an org ID and a key name. Returns the key and its internal ID. " +
+      "Returns a 409 Conflict error if a secret with that key already exists — use patch_secret to update it. " +
+      "Use push_secret instead if you want an anonymous, keyless dead drop.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        org: {
+          type: "string",
+          description: "Organization ID to store the secret in.",
+        },
+        key: {
+          type: "string",
+          description: "Key name to store the secret under.",
+        },
+        value: {
+          type: "string",
+          description: "Secret value.",
+        },
+      },
+      required: ["org", "key", "value"],
     },
   },
   {
@@ -569,11 +598,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "get_secret": {
-        const rawKey = (args as { key: string }).key;
-        const key = parseKeyRef(rawKey);
+        const { id: rawId, key: rawKey, org: rawOrg } = args as {
+          id?: string;
+          key?: string;
+          org?: string;
+        };
+
+        // Determine fetch path: public by ID, or org-scoped by key+org
+        let fetchPath: string;
+        let label: string;
+        if (rawId) {
+          fetchPath = publicSecretsPath(encodeURIComponent(rawId));
+          label = `ID '${rawId}'`;
+        } else if (rawKey) {
+          const key = parseKeyRef(rawKey);
+          const org = rawOrg ?? process.env.SIRR_ORG;
+          if (!org) {
+            return {
+              content: [{ type: "text" as const, text: "Error: 'org' is required when fetching by key name (or set SIRR_ORG env var)." }],
+              isError: true,
+            };
+          }
+          fetchPath = orgSecretsPath(org, encodeURIComponent(key));
+          label = `key '${key}' in org '${org}'`;
+        } else {
+          return {
+            content: [{ type: "text" as const, text: "Error: provide 'id' (public dead drop) or 'key'+'org' (org-scoped)." }],
+            isError: true,
+          };
+        }
 
         const res = await fetchWithTimeout(
-          `${SIRR_SERVER}${secretsPath(encodeURIComponent(key))}`,
+          `${SIRR_SERVER}${fetchPath}`,
           { headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
         );
 
@@ -582,7 +638,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [
               {
                 type: "text" as const,
-                text: `Secret '${key}' not found, expired, or already burned.`,
+                text: `Secret ${label} not found, expired, or already burned.`,
               },
             ],
           };
@@ -595,7 +651,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throwSirrError(res.status, json);
         }
 
-        const data = (await res.json()) as { value: string };
+        const data = (await res.json()) as { id?: string; value: string };
 
         return {
           content: [
@@ -643,27 +699,68 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "push_secret": {
-        const { key, value: val, ttl_seconds, max_reads, delete: del } = args as {
-          key: string;
+        const { value: val, ttl_seconds, max_reads } = args as {
           value: string;
           ttl_seconds?: number;
           max_reads?: number;
-          delete?: boolean;
         };
 
-        const body: Record<string, unknown> = { key, value: val };
+        const body: Record<string, unknown> = { value: val };
         if (ttl_seconds != null) body.ttl_seconds = ttl_seconds;
         if (max_reads != null) body.max_reads = max_reads;
-        if (del !== undefined) body.delete = del;
-        await sirrRequest("POST", secretsPath(), body);
 
-        const parts: string[] = [`Stored secret '${key}'.`];
+        const data = await sirrRequest<{ id: string }>("POST", publicSecretsPath(), body);
+        const url = `${SIRR_SERVER}/s/${data.id}`;
+
+        const parts: string[] = [`Secret pushed.`, `ID: ${data.id}`, `URL: ${url}`];
         if (ttl_seconds) parts.push(`Expires in ${formatTtl(Math.floor(Date.now() / 1000) + ttl_seconds)}.`);
         if (max_reads) parts.push(`Burns after ${max_reads} read(s).`);
-        if (del === false) parts.push("Sealed on burn (not deleted).");
 
         return {
-          content: [{ type: "text" as const, text: parts.join(" ") }],
+          content: [{ type: "text" as const, text: parts.join("\n") }],
+        };
+      }
+
+      case "set_secret": {
+        const { org, key, value: val } = args as {
+          org: string;
+          key: string;
+          value: string;
+        };
+
+        const res = await fetchWithTimeout(
+          `${SIRR_SERVER}${orgSecretsPath(org)}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${SIRR_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ key, value: val }),
+          },
+        );
+
+        if (res.status === 409) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Conflict: secret '${key}' already exists in org '${org}'. Use patch_secret to update it.`,
+            }],
+            isError: true,
+          };
+        }
+
+        if (!res.ok) {
+          let json: Record<string, unknown> = {};
+          try { json = (await res.json()) as Record<string, unknown>; }
+          catch { json = { error: await res.text().catch(() => "unknown") }; }
+          throwSirrError(res.status, json);
+        }
+
+        const data = (await res.json()) as { key: string; id: string };
+
+        return {
+          content: [{ type: "text" as const, text: `Secret '${data.key}' stored in org '${org}'.\nID: ${data.id}` }],
         };
       }
 
