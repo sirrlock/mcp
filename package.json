@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sirrlock/mcp"
+    "url": "git+https://github.com/sirrlock/mcp.git"
   },
   "main": "dist/index.js",
   "bin": {
