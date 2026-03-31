@@ -74,14 +74,25 @@ Or use `npx` without a global install — see the configuration block below.
 
 ## Quick start
 
-1. **Start Sirr** — run the Sirr server and note the `SIRR_MASTER_KEY` you set (or the one it printed on first launch).
-2. **Set your token** — `SIRR_TOKEN` in your MCP config must equal that `SIRR_MASTER_KEY` value (or a principal key for org-scoped access).
-3. **Add to `.mcp.json`** — paste the config block below, substituting your server URL and key.
-4. **Verify** — run `sirr-mcp --health` to confirm the connection before starting your AI session.
+### Sirr Cloud (recommended)
+
+1. **Sign up** at [sirrlock.com](https://sirrlock.com/sign-in) — free tier includes 3 seats and unlimited secrets.
+2. **Get your principal key** from the dashboard (Settings → API Keys).
+3. **Add to `.mcp.json`** — paste the config block below with your key and org ID.
+4. **Verify** — run `sirr-mcp --health` to confirm the connection.
+
+### Self-Hosted
+
+1. **Start Sirr** — run `sirrd serve` and note the `SIRR_MASTER_API_KEY` you set.
+2. **Set your token** — `SIRR_TOKEN` in your MCP config must equal that key value.
+3. **Add to `.mcp.json`** — use the self-hosted config block below.
+4. **Verify** — run `sirr-mcp --health` to confirm the connection.
 
 ## Configuration
 
-Add Sirr to your project's `.mcp.json` or `~/.claude/settings.json`:
+### Sirr Cloud (default)
+
+No `SIRR_SERVER` needed — defaults to `https://sirr.sirrlock.com`.
 
 ```json
 {
@@ -89,8 +100,8 @@ Add Sirr to your project's `.mcp.json` or `~/.claude/settings.json`:
     "sirr": {
       "command": "sirr-mcp",
       "env": {
-        "SIRR_SERVER": "http://localhost:39999",
-        "SIRR_TOKEN": "your-sirr-master-key"
+        "SIRR_TOKEN": "your-principal-key",
+        "SIRR_ORG": "your-org-id"
       }
     }
   }
@@ -106,23 +117,41 @@ Using `npx` without a global install:
       "command": "npx",
       "args": ["-y", "@sirrlock/mcp"],
       "env": {
-        "SIRR_SERVER": "http://localhost:39999",
-        "SIRR_TOKEN": "your-sirr-master-key"
+        "SIRR_TOKEN": "your-principal-key",
+        "SIRR_ORG": "your-org-id"
       }
     }
   }
 }
 ```
 
-> **What is `SIRR_TOKEN`?** For single-tenant usage, set it to `SIRR_MASTER_KEY` (full access). For multi-tenant org-scoped usage, set it to a principal key. A mismatch is the most common cause of 401 errors. See [sirr.dev/errors#401](https://sirr.dev/errors#401).
+### Self-Hosted
+
+Point `SIRR_SERVER` at your own `sirrd` instance:
+
+```json
+{
+  "mcpServers": {
+    "sirr": {
+      "command": "sirr-mcp",
+      "env": {
+        "SIRR_SERVER": "http://localhost:39999",
+        "SIRR_TOKEN": "your-master-api-key"
+      }
+    }
+  }
+}
+```
+
+> **What is `SIRR_TOKEN`?** On Sirr Cloud, use a **principal key** from the sirrlock.com dashboard. For self-hosted, use the `SIRR_MASTER_API_KEY` value (full access) or a principal key for org-scoped access. A mismatch is the most common cause of 401 errors. See [sirr.dev/errors#401](https://sirr.dev/errors#401).
 
 ### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `SIRR_SERVER` | `http://localhost:39999` | Sirr server URL |
-| `SIRR_TOKEN` | — | Bearer token — `SIRR_MASTER_KEY` for full access, or a principal key for org-scoped access |
-| `SIRR_ORG` | — | Organization ID for multi-tenant mode. When set, all secret/audit/webhook/prune paths are prefixed with `/orgs/{id}/`. Leave unset for single-tenant usage. |
+| `SIRR_SERVER` | `https://sirr.sirrlock.com` | Sirr server URL. Omit for Cloud; set to your instance URL for self-hosted. |
+| `SIRR_TOKEN` | — | Bearer token — a principal key (Cloud or org-scoped) or `SIRR_MASTER_API_KEY` (self-hosted full access) |
+| `SIRR_ORG` | — | Organization ID. Required for Cloud; optional for self-hosted single-tenant usage. |
 
 ## CLI flags
 
@@ -130,8 +159,11 @@ Using `npx` without a global install:
 # Print the installed version and exit
 sirr-mcp --version
 
-# Check that the MCP server can reach Sirr and exit
-SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=mykey sirr-mcp --health
+# Check connectivity (Cloud)
+SIRR_TOKEN=your-principal-key SIRR_ORG=your-org-id sirr-mcp --health
+
+# Check connectivity (self-hosted)
+SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=your-master-key sirr-mcp --health
 ```
 
 `--health` exits with code `0` on success and `1` on failure, making it safe to use in scripts and CI.
@@ -201,7 +233,7 @@ SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=mykey sirr-mcp --health
 
 | Tool | Description |
 |---|---|
-| `sirr_role_create(org_id, name, permissions)` | Create a custom role. Permissions: C=create R=read P=patch D=delete L=list M=manage A=admin |
+| `sirr_role_create(org_id, name, permissions)` | Create a custom role. Permission letters: `r`=read-own `R`=read-org `l`=list-own `L`=list-org `c`=create `C`=create-on-behalf `p`=patch-own `P`=patch-org `a`=account-read `A`=account-read-org `m`=account-manage `M`=manage-org `S`=sirr-admin `d`=delete-own `D`=delete-org |
 | `sirr_role_list(org_id)` | List all roles in an org (built-in and custom) |
 | `sirr_role_delete(org_id, role_name)` | Delete a custom role — must not be in use |
 
@@ -259,4 +291,4 @@ Use `check_secret` to inspect a secret's status without consuming a read — use
 | [sirr (PyPI)](https://github.com/sirrlock/python) | Python SDK |
 | [Sirr.Client (NuGet)](https://github.com/sirrlock/dotnet) | .NET SDK |
 | [sirr.dev](https://sirr.dev) | Documentation |
-| [secretdrop.app](https://secretdrop.app) | Hosted service + license keys |
+| [sirrlock.com](https://sirrlock.com) | Managed cloud + license keys |
