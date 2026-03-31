@@ -15,10 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No registry-url here — setup-node writes an .npmrc expecting NODE_AUTH_TOKEN,
+      # which conflicts with OIDC auth. OIDC needs a clean environment.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: npm
 
       - run: npm ci
@@ -40,14 +41,16 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # npm detects ACTIONS_ID_TOKEN_REQUEST_TOKEN in the environment and exchanges
+      # the GitHub OIDC token for a granular npm publish token automatically.
+      # No NPM_TOKEN secret needed.
+      #
+      # One-time setup required on npmjs.com before first automated publish:
+      #   @sirrlock/mcp → Settings → Publishing → Trusted Publishers
+      #   Repository: sirrlock/mcp   Workflow: publish.yml   Environment: (none)
       - name: Publish @sirrlock/mcp
         if: steps.mcp-check.outputs.skip == 'false'
-        run: |
-          echo "registry=https://registry.npmjs.org/" > /tmp/clean.npmrc
-          npm publish --access public --provenance
-        env:
-          NPM_CONFIG_USERCONFIG: /tmp/clean.npmrc
-          NODE_AUTH_TOKEN: ""
+        run: npm publish --provenance --access public
 
       - name: Create GitHub release
         if: steps.mcp-check.outputs.skip == 'false'
