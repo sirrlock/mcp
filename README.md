@@ -13,23 +13,25 @@ Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) s
 
 ## Demo
 
-**Session 1 — store the secret**
+### Public dead drop — push and burn
+
+**Session 1 — push a secret (value-only, no key needed)**
 
 ```
-❯ set the BITBUCKET_TOKEN to 123asdzxc
+❯ stash this deploy token: 123asdzxc
 
-⏺ sirr-mcp - push_secret (MCP)(key: "BITBUCKET_TOKEN", value: "123asdzxc", max_reads: 1)
-  ⎿  Stored secret 'BITBUCKET_TOKEN'. Burns after 1 read.
+⏺ sirr-mcp - push_secret (MCP)(value: "123asdzxc", max_reads: 1)
+  ⎿  Stored. ID: a1b2c3d4e5f6…  URL: https://sirr.example/secrets/a1b2c3d4e5f6…
 
-⏺ Stored. Burns after first read.
+⏺ Stored. Share the URL — it burns after one read.
 ```
 
-**Session 2 — Claude retrieves and uses it (the vault burns it)**
+**Session 2 — retrieve by ID (the vault burns it)**
 
 ```
-❯ deploy to staging using sirr:BITBUCKET_TOKEN
+❯ get the secret at a1b2c3d4e5f6…
 
-⏺ sirr-mcp - get_secret (MCP)(key: "BITBUCKET_TOKEN")
+⏺ sirr-mcp - get_secret (MCP)(id: "a1b2c3d4e5f6…")
   ⎿  123asdzxc
 
 ⏺ Got it. Deploying to staging with the token. Done.
@@ -38,15 +40,29 @@ Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) s
 **Session 3 — secret is already gone**
 
 ```
-❯ what is the BITBUCKET_TOKEN?
+❯ get that secret again
 
-⏺ sirr-mcp - get_secret (MCP)(key: "BITBUCKET_TOKEN")
-  ⎿  Secret 'BITBUCKET_TOKEN' not found, expired, or already burned.
+⏺ sirr-mcp - get_secret (MCP)(id: "a1b2c3d4e5f6…")
+  ⎿  Secret not found, expired, or already burned.
 
 ⏺ The secret no longer exists on the server.
 ```
 
-The secret existed just long enough to be used once. The vault enforces it server-side (`max_reads=1`). Claude is instructed by the tool description not to memorize or repeat the value. Even if a different agent, session, or attacker asks — there is nothing left to return.
+### Org-scoped named secret — set and get by key
+
+```
+❯ set the BITBUCKET_TOKEN to 123asdzxc in acme org
+
+⏺ sirr-mcp - set_secret (MCP)(org: "acme", key: "BITBUCKET_TOKEN", value: "123asdzxc")
+  ⎿  Stored 'BITBUCKET_TOKEN' in org acme.
+
+❯ deploy to staging using sirr:BITBUCKET_TOKEN
+
+⏺ sirr-mcp - get_secret (MCP)(key: "BITBUCKET_TOKEN", org: "acme")
+  ⎿  123asdzxc
+```
+
+The secret existed just long enough to be used. The vault enforces expiry server-side. Claude is instructed by the tool description not to memorize or repeat the value. Even if a different agent, session, or attacker asks — there is nothing left to return.
 
 ## Install
 
@@ -126,9 +142,10 @@ SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=mykey sirr-mcp --health
 
 | Tool | Description |
 |---|---|
+| `push_secret(value, ttl_seconds?, max_reads?)` | Anonymous public dead drop — value-only, returns `{id, url}`. No key or org needed. |
+| `set_secret(org, key, value)` | Org-scoped named secret — returns `{key, id}`. 409 Conflict if key already exists; use `patch_secret` to update. |
+| `get_secret(id)` or `get_secret(key, org)` | Dual mode: `id` fetches public dead drop (`GET /secrets/{id}`); `key`+`org` fetches org-scoped (`GET /orgs/{org}/secrets/{key}`) |
 | `check_secret(key)` | Check if a secret exists and inspect its metadata — **without consuming a read** |
-| `get_secret(key)` | Retrieve a secret value (increments read counter; burns if max_reads reached) |
-| `push_secret(key, value, ttl_seconds?, max_reads?, delete?)` | Store a secret with optional expiry, read limit, and seal behavior |
 | `patch_secret(key, value?, ttl_seconds?, max_reads?)` | Update an existing secret's value, TTL, or read limit |
 | `list_secrets()` | List all active secrets — metadata only, values never returned |
 | `delete_secret(key)` | Burn a secret immediately, regardless of TTL or read count |
@@ -190,24 +207,23 @@ SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=mykey sirr-mcp --health
 
 ## Inline secret references
 
-You can reference secrets inline in any prompt:
+You can reference org-scoped secrets inline in any prompt:
 
 ```
 "Use sirr:DATABASE_URL to run a migration"
 "Deploy with sirr:DEPLOY_TOKEN"
 ```
 
-The `sirr:KEYNAME` prefix tells Claude to fetch from the vault automatically.
+The `sirr:KEYNAME` prefix tells Claude to fetch from the vault automatically (requires `SIRR_ORG` to be set).
 
 ## Secret lifecycle
 
-Sirr secrets expire by design. The `push_secret` tool lets you control exactly how:
+Sirr secrets expire by design. Both `push_secret` and `set_secret` support expiry controls:
 
 | Option | Behavior |
 |---|---|
 | `ttl_seconds: 3600` | Secret expires after 1 hour, regardless of reads |
 | `max_reads: 1` | Secret is deleted after the first read |
-| `max_reads: 5, delete: false` | After 5 reads the secret is **sealed** (returns 410, stays in DB) instead of deleted |
 | No options | Secret persists until explicitly deleted |
 
 Use `check_secret` to inspect a secret's status without consuming a read — useful when you want to verify a secret is still available before fetching it.
@@ -228,7 +244,7 @@ Use `check_secret` to inspect a secret's status without consuming a read — use
 | `Error: Sirr 401` | `SIRR_TOKEN` doesn't match server key | Verify both values match exactly — no extra spaces or newlines. [sirr.dev/errors#401](https://sirr.dev/errors#401) |
 | `Error: Sirr 402` | Free-tier limit reached | Delete unused secrets or upgrade. [sirr.dev/errors#402](https://sirr.dev/errors#402) |
 | `Error: Sirr 403` | Token lacks the required permission | Use a token with the needed scope. [sirr.dev/errors#403](https://sirr.dev/errors#403) |
-| `Error: Sirr 409` | Resource has dependencies | Remove dependents first (e.g. delete principals before org). [sirr.dev/errors#409](https://sirr.dev/errors#409) |
+| `Error: Sirr 409` | Key already exists (`set_secret`) or resource has dependencies | Use `patch_secret` to update, or delete the secret first. For orgs: remove dependents first. [sirr.dev/errors#409](https://sirr.dev/errors#409) |
 | `Secret '…' not found` | Secret expired, was burned, or key was mistyped | Re-push the secret if you still need it. [sirr.dev/errors#404](https://sirr.dev/errors#404) |
 | `did not respond within 10s` | Sirr server is unreachable | Check `SIRR_SERVER` URL and confirm Sirr is running (`sirr-mcp --health`). |
 | `[sirr-mcp] Warning: SIRR_TOKEN is not set` | Token missing from MCP config | Add `SIRR_TOKEN` to the `env` block in `.mcp.json`. |
