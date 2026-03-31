@@ -15,11 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No registry-url here — setup-node writes an .npmrc expecting NODE_AUTH_TOKEN,
-      # which conflicts with OIDC auth. OIDC needs a clean environment.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: 'https://registry.npmjs.org'
           cache: npm
 
       - run: npm ci
