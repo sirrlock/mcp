@@ -2,11 +2,12 @@
 /**
  * @sirrlock/mcp — MCP server for Sirr secret vault
  *
- * Exposes Sirr as MCP tools so Claude Code can read/write ephemeral secrets.
+ * Exposes Sirr as MCP tools so AI assistants can store and read ephemeral secrets.
  *
  * Configuration (env vars):
  *   SIRR_SERVER  — Sirr server URL (default: https://sirr.sirrlock.com)
- *   SIRR_TOKEN   — Bearer token: SIRR_MASTER_KEY for full access, or a principal key for org-scoped access
+ *   SIRR_TOKEN   — Bearer token: master key for full access, or a principal key for org-scoped access
+ *   SIRR_ORG     — Organization ID. When set, store/read route through the org automatically.
  *
  * Install:  npm install -g @sirrlock/mcp
  * Configure in .mcp.json:
@@ -57,7 +58,6 @@ async function fetchWithTimeout(
           `Sirr server at ${SIRR_SERVER} did not respond within ${ms / 1000}s. Is it running?`,
         );
       }
-      // Node fetch throws "fetch failed" for ECONNREFUSED and other network errors
       if (err.message === "fetch failed") {
         throw new Error(
           `Cannot reach Sirr server at ${SIRR_SERVER}. Is it running?`,
@@ -72,20 +72,12 @@ async function fetchWithTimeout(
 
 // ── Sirr HTTP client ──────────────────────────────────────────────────────────
 
-interface SecretMeta {
-  key: string;
-  created_at: number;
-  expires_at: number | null;
-  max_reads: number | null;
-  read_count: number;
-}
-
 const STATUS_HINTS: Record<number, string> = {
   401: "Check that SIRR_TOKEN matches SIRR_MASTER_KEY on the server. See sirr.dev/errors#401",
   402: "Free tier limit reached. See sirr.dev/errors#402",
   403: "This token does not have permission for this operation. See sirr.dev/errors#403",
   404: "Resource not found, expired, or burned. See sirr.dev/errors#404",
-  409: "Conflict — a secret with that key already exists in this org. Use patch_secret to update it. See sirr.dev/errors#409",
+  409: "Conflict — a secret with that name already exists in this org. See sirr.dev/errors#409",
   500: "Server-side error. See sirr.dev/errors#500",
 };
 
@@ -122,75 +114,32 @@ async function sirrRequest<T>(
   return (await res.json()) as T;
 }
 
-import { parseKeyRef, formatTtl, secretsPath, publicSecretsPath, orgSecretsPath, auditPath, webhooksPath, prunePath } from "./helpers";
+import { parseKeyRef, formatTtl, publicSecretsPath, orgSecretsPath, secretsPath, auditPath } from "./helpers";
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 const TOOLS: Tool[] = [
   {
-    name: "get_secret",
+    name: "store_secret",
     description:
-      "Retrieve a secret from Sirr. " +
-      "Two modes: (1) Public dead drop — provide 'id' (hex64 returned by push_secret). " +
-      "Fetches from GET /secrets/{id}. The read counter is incremented — if max_reads=1 the secret burns after this call. " +
-      "(2) Org-scoped — provide 'key' and 'org' to fetch a named secret from an organization's vault. " +
-      "Returns null if the secret does not exist, has expired, or has been burned. " +
-      "IMPORTANT: Do not store, log, memorize, or repeat the returned secret value beyond its immediate use. " +
-      "Treat it as ephemeral — use it once for its intended purpose and discard it.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        id: {
-          type: "string",
-          description:
-            "Public secret ID (hex64) returned by push_secret. Use for public dead-drop retrieval.",
-        },
-        key: {
-          type: "string",
-          description:
-            "Secret key name for org-scoped retrieval. Accepts 'sirr:KEYNAME', 'KEYNAME#id', or bare key name.",
-        },
-        org: {
-          type: "string",
-          description:
-            "Organization ID for org-scoped retrieval. Required when using 'key'.",
-        },
-      },
-    },
-  },
-  {
-    name: "check_secret",
-    description:
-      "Check whether a secret exists and inspect its metadata — WITHOUT consuming a read. " +
-      "Use this to verify a secret is still available before fetching it, or to inspect read counts and expiry. " +
-      "Returns status (active/sealed), reads used/remaining, and expiry. " +
-      "A 'sealed' secret has exhausted its max_reads; it still exists but cannot be read.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        key: {
-          type: "string",
-          description: "Secret key name. Accepts 'sirr:KEYNAME', 'KEYNAME#id', or bare key name.",
-        },
-      },
-      required: ["key"],
-    },
-  },
-  {
-    name: "push_secret",
-    description:
-      "Push a secret as an anonymous public dead drop — no key, no org required. " +
-      "Returns an opaque ID and a one-time URL. Share the URL; the recipient opens it once and it burns. " +
-      "Optionally set a TTL (seconds) and/or max read limit. " +
-      "Use max_reads=1 (default) for one-time credentials that burn after first access. " +
-      "Use ttl_seconds to add a time-based expiry. " +
-      "IMPORTANT: Do not store, log, or repeat the pushed value after the call.",
+      "Store a secret in Sirr. " +
+      "Without a name: creates an anonymous burn-after-read dead drop — returns a one-time URL. " +
+      "With a name (requires SIRR_ORG config): stores a named secret in your organization's vault. " +
+      "Optionally set ttl_seconds and/or max_reads (default for anonymous: 1 read, then burned). " +
+      "IMPORTANT: Do not store, log, or repeat the secret value after this call.",
     inputSchema: {
       type: "object" as const,
       properties: {
         value: {
           type: "string",
-          description: "Secret value to push.",
+          description: "The secret value to store.",
+        },
+        name: {
+          type: "string",
+          description:
+            "Optional key name for org-scoped storage. " +
+            "Omit for anonymous dead drop. " +
+            "Requires SIRR_ORG to be configured in .mcp.json.",
         },
         ttl_seconds: {
           type: "number",
@@ -199,132 +148,79 @@ const TOOLS: Tool[] = [
         },
         max_reads: {
           type: "number",
-          description: "Optional maximum read count. Default: 1 (burn after first read).",
+          description:
+            "Max read count before the secret burns. Default: 1 for anonymous dead drops.",
         },
       },
       required: ["value"],
     },
   },
   {
-    name: "set_secret",
+    name: "read_secret",
     description:
-      "Store a named secret in an organization's vault (org-scoped). " +
-      "Requires an org ID and a key name. Returns the key and its internal ID. " +
-      "Returns a 409 Conflict error if a secret with that key already exists — use patch_secret to update it. " +
-      "Use push_secret instead if you want an anonymous, keyless dead drop.",
+      "Read a secret from Sirr. " +
+      "By ID: retrieves a public dead-drop secret (the read counter increments — may burn after this). " +
+      "By name: retrieves a named secret from your org vault (requires SIRR_ORG config). " +
+      "Returns null if the secret doesn't exist, expired, or was burned. " +
+      "IMPORTANT: Do not store, log, memorize, or repeat the returned value beyond its immediate use. " +
+      "Treat it as ephemeral — use it once for its intended purpose and discard it.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        org: {
+        id: {
           type: "string",
-          description: "Organization ID to store the secret in.",
+          description:
+            "Public secret ID (hex64 returned by store_secret). Use for anonymous dead drops.",
         },
-        key: {
+        name: {
           type: "string",
-          description: "Key name to store the secret under.",
-        },
-        value: {
-          type: "string",
-          description: "Secret value.",
+          description:
+            "Secret key name for org-scoped retrieval. Accepts 'sirr:KEYNAME' or bare name. Requires SIRR_ORG config.",
         },
       },
-      required: ["org", "key", "value"],
     },
   },
   {
-    name: "list_secrets",
+    name: "check_secret",
     description:
-      "List all active secrets in the Sirr vault. Returns metadata only — values are never included. " +
-      "Shows key name, expiry time, and read count for each secret.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "delete_secret",
-    description:
-      "Immediately delete (burn) a secret from the Sirr vault, regardless of TTL or read count.",
+      "Check if a secret exists and inspect its metadata WITHOUT consuming a read. " +
+      "Returns status (active/sealed/expired), reads used/remaining, and expiry. " +
+      "Safe to call repeatedly — does not burn the secret.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        key: {
+        name: {
           type: "string",
-          description: "Key name to delete.",
+          description:
+            "Secret key name to check. Accepts 'sirr:KEYNAME' or bare name.",
         },
       },
-      required: ["key"],
-    },
-  },
-  {
-    name: "patch_secret",
-    description:
-      "Update an existing secret's value, TTL, or max read count. All fields are optional — only provided fields are changed.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        key: {
-          type: "string",
-          description: "Key name to update.",
-        },
-        value: {
-          type: "string",
-          description: "New secret value.",
-        },
-        ttl_seconds: {
-          type: "number",
-          description: "New TTL in seconds from now.",
-        },
-        max_reads: {
-          type: "number",
-          description: "New max read count.",
-        },
-      },
-      required: ["key"],
-    },
-  },
-  {
-    name: "prune_secrets",
-    description:
-      "Trigger an immediate sweep of all expired secrets on the server. " +
-      "Returns the count of secrets that were deleted.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "health_check",
-    description: "Check if the Sirr server is reachable and healthy.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
+      required: ["name"],
     },
   },
   {
     name: "share_secret",
     description:
-      "Share a sensitive value via a secure burn-after-read link hosted on sirrlock.com. " +
-      "No account or token required. " +
-      "The link expires after 24 hours or after the recipient opens it once — whichever comes first. " +
+      "Create a burn-after-read link for sharing a secret with someone outside your org. " +
+      "No account needed on either end. The link expires after 24 hours or one read — whichever comes first. " +
       "Returns a URL to send to the recipient. " +
-      "IMPORTANT: Do not store or repeat the secret value. Use the returned URL only.",
+      "IMPORTANT: Do not store or repeat the secret value after this call.",
     inputSchema: {
       type: "object" as const,
       properties: {
         value: {
           type: "string",
-          description: "The sensitive value to share (password, token, link, etc.).",
+          description: "The sensitive value to share (password, token, key, etc.).",
         },
       },
       required: ["value"],
     },
   },
   {
-    name: "sirr_audit",
+    name: "audit",
     description:
-      "Query the Sirr audit log. Returns recent events like secret creates, reads, deletes. " +
-      "Useful for security monitoring and debugging access patterns.",
+      "Query the Sirr audit log. Shows recent events: secret creates, reads, deletes. " +
+      "Useful for verifying a secret was burned or investigating access patterns.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -332,251 +228,16 @@ const TOOLS: Tool[] = [
           type: "number",
           description: "Only return events after this Unix timestamp.",
         },
-        until: {
-          type: "number",
-          description: "Only return events before this Unix timestamp.",
-        },
         action: {
           type: "string",
-          description: "Filter by action type (e.g. secret.create, secret.read, key.create).",
+          description:
+            "Filter by action type (e.g. secret.create, secret.read, secret.delete).",
         },
         limit: {
           type: "number",
-          description: "Maximum events to return (default: 100, max: 1000).",
+          description: "Max events to return (default: 50, max: 1000).",
         },
       },
-    },
-  },
-  {
-    name: "sirr_webhook_create",
-    description:
-      "Register a webhook URL to receive Sirr event notifications. " +
-      "Returns the webhook ID and signing secret (shown once — save it).",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        url: {
-          type: "string",
-          description: "Webhook endpoint URL (must start with http:// or https://).",
-        },
-        events: {
-          type: "array",
-          items: { type: "string" },
-          description: "Event types to subscribe to (default: all). Examples: secret.created, secret.burned.",
-        },
-      },
-      required: ["url"],
-    },
-  },
-  {
-    name: "sirr_webhook_list",
-    description: "List all registered webhooks on the Sirr server. Signing secrets are redacted.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "sirr_webhook_delete",
-    description: "Remove a webhook registration by its ID.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        id: {
-          type: "string",
-          description: "Webhook ID to delete.",
-        },
-      },
-      required: ["id"],
-    },
-  },
-  {
-    name: "sirr_key_list",
-    description: "List all API keys for the current principal. Key values are never returned.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "sirr_me",
-    description:
-      "Get the current authenticated user/org profile from the Sirr server. " +
-      "Returns account details and current plan information.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-  },
-  {
-    name: "sirr_update_me",
-    description:
-      "Update the current principal's metadata on the Sirr server.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        metadata: {
-          type: "object",
-          additionalProperties: { type: "string" },
-          description: "Key/value metadata to set on the principal (replaces existing metadata).",
-        },
-      },
-      required: ["metadata"],
-    },
-  },
-  {
-    name: "sirr_create_key",
-    description:
-      "Create a new API key for the current principal via /me/keys. " +
-      "The raw key is returned once — save it immediately.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        name: {
-          type: "string",
-          description: "Human-readable name for the key.",
-        },
-        valid_for_seconds: {
-          type: "number",
-          description: "How long the key is valid, in seconds (default: 1 year).",
-        },
-        valid_before: {
-          type: "number",
-          description: "Explicit expiry as a Unix timestamp (alternative to valid_for_seconds).",
-        },
-      },
-      required: ["name"],
-    },
-  },
-  {
-    name: "sirr_delete_key",
-    description: "Revoke an API key belonging to the current principal.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        keyId: {
-          type: "string",
-          description: "API key ID to delete.",
-        },
-      },
-      required: ["keyId"],
-    },
-  },
-  // ── Org management ──────────────────────────────────────────────────────────
-  {
-    name: "sirr_org_create",
-    description: "Create a new organization. Requires master key or sirr_admin permission.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        name: { type: "string", description: "Organization name (1–128 chars)." },
-        metadata: {
-          type: "object",
-          additionalProperties: { type: "string" },
-          description: "Optional key/value metadata.",
-        },
-      },
-      required: ["name"],
-    },
-  },
-  {
-    name: "sirr_org_list",
-    description: "List all organizations. Requires master key.",
-    inputSchema: { type: "object" as const, properties: {} },
-  },
-  {
-    name: "sirr_org_delete",
-    description: "Delete an organization by ID. Org must have no principals. Requires master key.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID to delete." },
-      },
-      required: ["org_id"],
-    },
-  },
-  // ── Principal management ─────────────────────────────────────────────────────
-  {
-    name: "sirr_principal_create",
-    description: "Create a principal (user/service) in an organization.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-        name: { type: "string", description: "Principal name (1–128 chars)." },
-        role: { type: "string", description: "Role name (must exist in the org or be a built-in role)." },
-        metadata: {
-          type: "object",
-          additionalProperties: { type: "string" },
-          description: "Optional key/value metadata.",
-        },
-      },
-      required: ["org_id", "name", "role"],
-    },
-  },
-  {
-    name: "sirr_principal_list",
-    description: "List all principals in an organization.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-      },
-      required: ["org_id"],
-    },
-  },
-  {
-    name: "sirr_principal_delete",
-    description: "Delete a principal from an organization. Principal must have no active keys.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-        principal_id: { type: "string", description: "Principal ID to delete." },
-      },
-      required: ["org_id", "principal_id"],
-    },
-  },
-  // ── Role management ──────────────────────────────────────────────────────────
-  {
-    name: "sirr_role_create",
-    description:
-      "Create a custom role in an organization. " +
-      "Permissions are a letter string: C=create, R=read, P=patch, D=delete, L=list, M=manage, A=admin.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-        name: { type: "string", description: "Role name (1–64 chars)." },
-        permissions: {
-          type: "string",
-          description: "Permission letters, e.g. 'CRL' for create+read+list.",
-        },
-      },
-      required: ["org_id", "name", "permissions"],
-    },
-  },
-  {
-    name: "sirr_role_list",
-    description: "List all roles in an organization (built-in and custom).",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-      },
-      required: ["org_id"],
-    },
-  },
-  {
-    name: "sirr_role_delete",
-    description: "Delete a custom role from an organization. Cannot delete built-in roles or roles in use.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        org_id: { type: "string", description: "Organization ID." },
-        role_name: { type: "string", description: "Role name to delete." },
-      },
-      required: ["org_id", "role_name"],
     },
   },
 ];
@@ -597,33 +258,132 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "get_secret": {
-        const { id: rawId, key: rawKey, org: rawOrg } = args as {
-          id?: string;
-          key?: string;
-          org?: string;
+      // ── store_secret ─────────────────────────────────────────────────────
+      case "store_secret": {
+        const {
+          value: val,
+          name: secretName,
+          ttl_seconds,
+          max_reads,
+        } = args as {
+          value: string;
+          name?: string;
+          ttl_seconds?: number;
+          max_reads?: number;
         };
 
-        // Determine fetch path: public by ID, or org-scoped by key+org
+        // Named + org → org-scoped set
+        if (secretName) {
+          const org = process.env["SIRR_ORG"];
+          if (!org) {
+            return {
+              content: [{
+                type: "text" as const,
+                text:
+                  "Error: Named secrets require SIRR_ORG to be configured.\n\n" +
+                  "To use org-scoped secrets, add SIRR_ORG to your .mcp.json env block:\n" +
+                  '  "SIRR_ORG": "your-org-id"\n\n' +
+                  "Get your org ID from the sirrlock.com dashboard or `sirr org list`.\n" +
+                  "Or omit the name to create an anonymous dead drop instead.",
+              }],
+              isError: true,
+            };
+          }
+
+          const body: Record<string, unknown> = { key: secretName, value: val };
+          if (ttl_seconds != null) body.ttl_seconds = ttl_seconds;
+          if (max_reads != null) body.max_reads = max_reads;
+
+          const res = await fetchWithTimeout(
+            `${SIRR_SERVER}${orgSecretsPath(org)}`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${SIRR_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(body),
+            },
+          );
+
+          if (res.status === 409) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Secret '${secretName}' already exists in org '${org}'. To update it, delete it first and re-store, or use the CLI: sirr patch ${secretName}`,
+              }],
+              isError: true,
+            };
+          }
+
+          if (!res.ok) {
+            let json: Record<string, unknown> = {};
+            try { json = (await res.json()) as Record<string, unknown>; }
+            catch { json = { error: await res.text().catch(() => "unknown") }; }
+            throwSirrError(res.status, json);
+          }
+
+          const data = (await res.json()) as { key: string; id: string };
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Secret '${data.key}' stored in org '${org}'.`,
+            }],
+          };
+        }
+
+        // No name → anonymous public dead drop
+        const body: Record<string, unknown> = { value: val };
+        if (ttl_seconds != null) body.ttl_seconds = ttl_seconds;
+        if (max_reads != null) body.max_reads = max_reads;
+
+        const data = await sirrRequest<{ id: string }>("POST", publicSecretsPath(), body);
+        const url = `${SIRR_SERVER}/s/${data.id}`;
+
+        const parts: string[] = [`Secret pushed.`, `ID: ${data.id}`, `URL: ${url}`];
+        if (ttl_seconds) parts.push(`Expires in ${formatTtl(Math.floor(Date.now() / 1000) + ttl_seconds)}.`);
+        parts.push(`Burns after ${max_reads ?? 1} read(s).`);
+
+        return {
+          content: [{ type: "text" as const, text: parts.join("\n") }],
+        };
+      }
+
+      // ── read_secret ──────────────────────────────────────────────────────
+      case "read_secret": {
+        const { id: rawId, name: rawName } = args as {
+          id?: string;
+          name?: string;
+        };
+
         let fetchPath: string;
         let label: string;
+
         if (rawId) {
           fetchPath = publicSecretsPath(encodeURIComponent(rawId));
           label = `ID '${rawId}'`;
-        } else if (rawKey) {
-          const key = parseKeyRef(rawKey);
-          const org = rawOrg ?? process.env.SIRR_ORG;
+        } else if (rawName) {
+          const key = parseKeyRef(rawName);
+          const org = process.env["SIRR_ORG"];
           if (!org) {
             return {
-              content: [{ type: "text" as const, text: "Error: 'org' is required when fetching by key name (or set SIRR_ORG env var)." }],
+              content: [{
+                type: "text" as const,
+                text:
+                  "Error: Reading by name requires SIRR_ORG to be configured.\n\n" +
+                  "Add SIRR_ORG to your .mcp.json env block, or provide an 'id' instead.",
+              }],
               isError: true,
             };
           }
           fetchPath = orgSecretsPath(org, encodeURIComponent(key));
-          label = `key '${key}' in org '${org}'`;
+          label = `'${key}' in org '${org}'`;
         } else {
           return {
-            content: [{ type: "text" as const, text: "Error: provide 'id' (public dead drop) or 'key'+'org' (org-scoped)." }],
+            content: [{
+              type: "text" as const,
+              text: "Error: provide 'id' (anonymous dead drop) or 'name' (org-scoped secret).",
+            }],
             isError: true,
           };
         }
@@ -635,12 +395,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (res.status === 404 || res.status === 410) {
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Secret ${label} not found, expired, or already burned.`,
-              },
-            ],
+            content: [{
+              type: "text" as const,
+              text: `Secret ${label} not found, expired, or already burned.`,
+            }],
           };
         }
 
@@ -655,21 +413,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [
-            {
-              type: "text" as const,
-              text: data.value,
-            },
-            {
-              type: "text" as const,
-              text: "[Use immediately — do not store, log, or memorize this value.]",
-            },
+            { type: "text" as const, text: data.value },
+            { type: "text" as const, text: "[Use immediately — do not store, log, or memorize this value.]" },
           ],
         };
       }
 
+      // ── check_secret ─────────────────────────────────────────────────────
       case "check_secret": {
-        const rawKey = (args as { key: string }).key;
-        const key = parseKeyRef(rawKey);
+        const rawName = (args as { name: string }).name;
+        const key = parseKeyRef(rawName);
 
         const res = await fetchWithTimeout(
           `${SIRR_SERVER}${secretsPath(encodeURIComponent(key))}`,
@@ -698,531 +451,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case "push_secret": {
-        const { value: val, ttl_seconds, max_reads } = args as {
-          value: string;
-          ttl_seconds?: number;
-          max_reads?: number;
-        };
-
-        const body: Record<string, unknown> = { value: val };
-        if (ttl_seconds != null) body.ttl_seconds = ttl_seconds;
-        if (max_reads != null) body.max_reads = max_reads;
-
-        const data = await sirrRequest<{ id: string }>("POST", publicSecretsPath(), body);
-        const url = `${SIRR_SERVER}/s/${data.id}`;
-
-        const parts: string[] = [`Secret pushed.`, `ID: ${data.id}`, `URL: ${url}`];
-        if (ttl_seconds) parts.push(`Expires in ${formatTtl(Math.floor(Date.now() / 1000) + ttl_seconds)}.`);
-        if (max_reads) parts.push(`Burns after ${max_reads} read(s).`);
-
-        return {
-          content: [{ type: "text" as const, text: parts.join("\n") }],
-        };
-      }
-
-      case "set_secret": {
-        const { org, key, value: val } = args as {
-          org: string;
-          key: string;
-          value: string;
-        };
-
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}${orgSecretsPath(org)}`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${SIRR_TOKEN}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ key, value: val }),
-          },
-        );
-
-        if (res.status === 409) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Conflict: secret '${key}' already exists in org '${org}'. Use patch_secret to update it.`,
-            }],
-            isError: true,
-          };
-        }
-
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-
-        const data = (await res.json()) as { key: string; id: string };
-
-        return {
-          content: [{ type: "text" as const, text: `Secret '${data.key}' stored in org '${org}'.\nID: ${data.id}` }],
-        };
-      }
-
-      case "list_secrets": {
-        const data = await sirrRequest<{ secrets: SecretMeta[] }>(
-          "GET",
-          secretsPath(),
-        );
-
-        if (data.secrets.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No active secrets." }],
-          };
-        }
-
-        const lines = data.secrets.map((m) => {
-          const expiry = formatTtl(m.expires_at);
-          const reads =
-            m.max_reads != null
-              ? `${m.read_count}/${m.max_reads} reads`
-              : `${m.read_count} reads`;
-          return `• ${m.key} — ${expiry} — ${reads}`;
-        });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${data.secrets.length} active secret(s):\n${lines.join("\n")}`,
-            },
-          ],
-        };
-      }
-
-      case "delete_secret": {
-        const { key } = args as { key: string };
-
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}${secretsPath(encodeURIComponent(key))}`,
-          {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${SIRR_TOKEN}` },
-          },
-        );
-
-        if (res.status === 404) {
-          return {
-            content: [
-              { type: "text" as const, text: `Secret '${key}' not found.` },
-            ],
-          };
-        }
-
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Secret '${key}' deleted.`,
-            },
-          ],
-        };
-      }
-
-      case "patch_secret": {
-        const { key, value: val, ttl_seconds, max_reads } = args as {
-          key: string; value?: string; ttl_seconds?: number; max_reads?: number;
-        };
-        const body: Record<string, unknown> = {};
-        if (val !== undefined) body.value = val;
-        if (ttl_seconds !== undefined) body.ttl_seconds = ttl_seconds;
-        if (max_reads !== undefined) body.max_reads = max_reads;
-        const data = await sirrRequest<{
-          key: string; read_count: number; max_reads: number | null; expires_at: number | null;
-        }>("PATCH", secretsPath(encodeURIComponent(key)), body);
-        const parts: string[] = [`Secret '${key}' updated.`, `Expires: ${formatTtl(data.expires_at)}`];
-        if (data.max_reads != null) parts.push(`Max reads: ${data.max_reads} (${data.read_count} used)`);
-        return { content: [{ type: "text" as const, text: parts.join("\n  ") }] };
-      }
-
-      case "prune_secrets": {
-        const data = await sirrRequest<{ pruned: number }>("POST", prunePath());
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Pruned ${data.pruned} expired secret(s).`,
-            },
-          ],
-        };
-      }
-
-      case "health_check": {
-        const res = await fetchWithTimeout(`${SIRR_SERVER}/health`);
-
-        if (!res.ok) {
-          const json = (await res.json()) as Record<string, unknown>;
-          throwSirrError(res.status, json);
-        }
-
-        const data = (await res.json()) as { status: string };
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Sirr server status: ${data.status} (${SIRR_SERVER})`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_audit": {
-        const { since, until, action, limit } = args as {
-          since?: number;
-          until?: number;
-          action?: string;
-          limit?: number;
-        };
-        const params = new URLSearchParams();
-        if (since != null) params.set("since", String(since));
-        if (until != null) params.set("until", String(until));
-        if (action != null) params.set("action", action);
-        if (limit != null) params.set("limit", String(limit));
-        const qs = params.toString();
-        const data = await sirrRequest<{ events: Array<{ id: number; timestamp: number; action: string; key: string | null; source_ip: string; success: boolean }> }>(
-          "GET",
-          `${auditPath()}${qs ? `?${qs}` : ""}`,
-        );
-
-        if (data.events.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No audit events found." }],
-          };
-        }
-
-        const lines = data.events.map(
-          (e) =>
-            `[${e.timestamp}] ${e.action} key=${e.key ?? "-"} ip=${e.source_ip} ${e.success ? "ok" : "FAIL"}`,
-        );
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${data.events.length} audit event(s):\n${lines.join("\n")}`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_webhook_create": {
-        const { url, events } = args as { url: string; events?: string[] };
-        const body: Record<string, unknown> = { url };
-        if (events) body.events = events;
-        const data = await sirrRequest<{ id: string; secret: string }>(
-          "POST",
-          webhooksPath(),
-          body,
-        );
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Webhook registered.\n  ID: ${data.id}\n  Secret: ${data.secret}\n  (Save the secret — it won't be shown again)`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_webhook_list": {
-        const data = await sirrRequest<{
-          webhooks: Array<{ id: string; url: string; events: string[]; created_at: number }>;
-        }>("GET", webhooksPath());
-
-        if (data.webhooks.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No webhooks registered." }],
-          };
-        }
-
-        const lines = data.webhooks.map(
-          (w) => `• ${w.id} — ${w.url} [${w.events.join(",")}]`,
-        );
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${data.webhooks.length} webhook(s):\n${lines.join("\n")}`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_webhook_delete": {
-        const { id } = args as { id: string };
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}${webhooksPath(encodeURIComponent(id))}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
-        );
-        if (res.status === 404) {
-          return { content: [{ type: "text" as const, text: `Webhook '${id}' not found.` }] };
-        }
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-        return { content: [{ type: "text" as const, text: `Webhook '${id}' deleted.` }] };
-      }
-
-      case "sirr_key_list": {
-        const me = await sirrRequest<{
-          keys: Array<{
-            id: string;
-            name: string;
-            valid_after: number;
-            valid_before: number;
-            created_at: number;
-          }>;
-        }>("GET", "/me");
-
-        if (!me.keys || me.keys.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No API keys." }],
-          };
-        }
-
-        const lines = me.keys.map(
-          (k) =>
-            `• ${k.id} — ${k.name} (expires ${new Date(k.valid_before * 1000).toISOString()})`,
-        );
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${me.keys.length} API key(s):\n${lines.join("\n")}`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_me": {
-        const data = await sirrRequest<Record<string, unknown>>("GET", "/me");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(data, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "sirr_update_me": {
-        const { metadata } = args as { metadata: Record<string, string> };
-        const data = await sirrRequest<Record<string, unknown>>("PATCH", "/me", { metadata });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Profile updated.\n${JSON.stringify(data, null, 2)}`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_create_key": {
-        const { name: keyName, valid_for_seconds, valid_before } = args as {
-          name: string;
-          valid_for_seconds?: number;
-          valid_before?: number;
-        };
-        const body: Record<string, unknown> = { name: keyName };
-        if (valid_for_seconds != null) body.valid_for_seconds = valid_for_seconds;
-        if (valid_before != null) body.valid_before = valid_before;
-        const data = await sirrRequest<{
-          id: string;
-          name: string;
-          key: string;
-          valid_after: number;
-          valid_before: number;
-        }>("POST", "/me/keys", body);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `API key created.\n  ID: ${data.id}\n  Name: ${data.name}\n  Key: ${data.key}\n  Valid until: ${new Date(data.valid_before * 1000).toISOString()}\n  (Save the key — it won't be shown again)`,
-            },
-          ],
-        };
-      }
-
-      case "sirr_delete_key": {
-        const { keyId } = args as { keyId: string };
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}/me/keys/${encodeURIComponent(keyId)}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
-        );
-        if (res.status === 404) {
-          return { content: [{ type: "text" as const, text: `API key '${keyId}' not found.` }] };
-        }
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-        return { content: [{ type: "text" as const, text: `API key '${keyId}' deleted.` }] };
-      }
-
-      // ── Org management ────────────────────────────────────────────────────────
-
-      case "sirr_org_create": {
-        const { name: orgName, metadata } = args as { name: string; metadata?: Record<string, string> };
-        const data = await sirrRequest<{ id: string; name: string }>(
-          "POST", "/orgs", { name: orgName, metadata: metadata ?? {} },
-        );
-        return {
-          content: [{ type: "text" as const, text: `Org created.\n  ID: ${data.id}\n  Name: ${data.name}` }],
-        };
-      }
-
-      case "sirr_org_list": {
-        const data = await sirrRequest<{
-          orgs: Array<{ id: string; name: string; metadata: Record<string, string>; created_at: number }>;
-        }>("GET", "/orgs");
-        if (data.orgs.length === 0) {
-          return { content: [{ type: "text" as const, text: "No organizations." }] };
-        }
-        const lines = data.orgs.map((o) => `• ${o.id} — ${o.name}`);
-        return {
-          content: [{ type: "text" as const, text: `${data.orgs.length} org(s):\n${lines.join("\n")}` }],
-        };
-      }
-
-      case "sirr_org_delete": {
-        const { org_id } = args as { org_id: string };
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}/orgs/${encodeURIComponent(org_id)}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
-        );
-        if (res.status === 404) {
-          return { content: [{ type: "text" as const, text: `Org '${org_id}' not found.` }] };
-        }
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-        return { content: [{ type: "text" as const, text: `Org '${org_id}' deleted.` }] };
-      }
-
-      // ── Principal management ──────────────────────────────────────────────────
-
-      case "sirr_principal_create": {
-        const { org_id, name: pName, role, metadata } = args as {
-          org_id: string; name: string; role: string; metadata?: Record<string, string>;
-        };
-        const data = await sirrRequest<{ id: string; name: string; role: string; org_id: string }>(
-          "POST", `/orgs/${encodeURIComponent(org_id)}/principals`,
-          { name: pName, role, metadata: metadata ?? {} },
-        );
-        return {
-          content: [{ type: "text" as const, text: `Principal created.\n  ID: ${data.id}\n  Name: ${data.name}\n  Role: ${data.role}` }],
-        };
-      }
-
-      case "sirr_principal_list": {
-        const { org_id } = args as { org_id: string };
-        const data = await sirrRequest<{
-          principals: Array<{ id: string; name: string; role: string; org_id: string; created_at: number }>;
-        }>("GET", `/orgs/${encodeURIComponent(org_id)}/principals`);
-        if (data.principals.length === 0) {
-          return { content: [{ type: "text" as const, text: "No principals." }] };
-        }
-        const lines = data.principals.map((p) => `• ${p.id} — ${p.name} [${p.role}]`);
-        return {
-          content: [{ type: "text" as const, text: `${data.principals.length} principal(s):\n${lines.join("\n")}` }],
-        };
-      }
-
-      case "sirr_principal_delete": {
-        const { org_id, principal_id } = args as { org_id: string; principal_id: string };
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}/orgs/${encodeURIComponent(org_id)}/principals/${encodeURIComponent(principal_id)}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
-        );
-        if (res.status === 404) {
-          return { content: [{ type: "text" as const, text: `Principal '${principal_id}' not found.` }] };
-        }
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-        return { content: [{ type: "text" as const, text: `Principal '${principal_id}' deleted.` }] };
-      }
-
-      // ── Role management ───────────────────────────────────────────────────────
-
-      case "sirr_role_create": {
-        const { org_id, name: roleName, permissions } = args as {
-          org_id: string; name: string; permissions: string;
-        };
-        const data = await sirrRequest<{ name: string; permissions: string; org_id: string }>(
-          "POST", `/orgs/${encodeURIComponent(org_id)}/roles`,
-          { name: roleName, permissions },
-        );
-        return {
-          content: [{ type: "text" as const, text: `Role '${data.name}' created with permissions '${data.permissions}'.` }],
-        };
-      }
-
-      case "sirr_role_list": {
-        const { org_id } = args as { org_id: string };
-        const data = await sirrRequest<{
-          roles: Array<{ name: string; permissions: string; built_in: boolean; created_at: number }>;
-        }>("GET", `/orgs/${encodeURIComponent(org_id)}/roles`);
-        if (data.roles.length === 0) {
-          return { content: [{ type: "text" as const, text: "No roles." }] };
-        }
-        const lines = data.roles.map(
-          (r) => `• ${r.name} [${r.permissions}]${r.built_in ? " (built-in)" : ""}`,
-        );
-        return {
-          content: [{ type: "text" as const, text: `${data.roles.length} role(s):\n${lines.join("\n")}` }],
-        };
-      }
-
-      case "sirr_role_delete": {
-        const { org_id, role_name } = args as { org_id: string; role_name: string };
-        const res = await fetchWithTimeout(
-          `${SIRR_SERVER}/orgs/${encodeURIComponent(org_id)}/roles/${encodeURIComponent(role_name)}`,
-          { method: "DELETE", headers: { Authorization: `Bearer ${SIRR_TOKEN}` } },
-        );
-        if (res.status === 404) {
-          return { content: [{ type: "text" as const, text: `Role '${role_name}' not found.` }] };
-        }
-        if (!res.ok) {
-          let json: Record<string, unknown> = {};
-          try { json = (await res.json()) as Record<string, unknown>; }
-          catch { json = { error: await res.text().catch(() => "unknown") }; }
-          throwSirrError(res.status, json);
-        }
-        return {
-          content: [{ type: "text" as const, text: `Role '${role_name}' deleted.` }],
-        };
-      }
-
+      // ── share_secret ─────────────────────────────────────────────────────
       case "share_secret": {
         const { value: shareValue } = args as { value: string };
 
@@ -1253,6 +482,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      // ── audit ────────────────────────────────────────────────────────────
+      case "audit": {
+        const { since, action, limit } = args as {
+          since?: number;
+          action?: string;
+          limit?: number;
+        };
+        const params = new URLSearchParams();
+        if (since != null) params.set("since", String(since));
+        if (action != null) params.set("action", action);
+        if (limit != null) params.set("limit", String(limit));
+        const qs = params.toString();
+        const data = await sirrRequest<{ events: Array<{ id: number; timestamp: number; action: string; key: string | null; source_ip: string; success: boolean }> }>(
+          "GET",
+          `${auditPath()}${qs ? `?${qs}` : ""}`,
+        );
+
+        if (data.events.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "No audit events found." }],
+          };
+        }
+
+        const lines = data.events.map(
+          (e) =>
+            `[${e.timestamp}] ${e.action} key=${e.key ?? "-"} ip=${e.source_ip} ${e.success ? "ok" : "FAIL"}`,
+        );
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: `${data.events.length} audit event(s):\n${lines.join("\n")}`,
+          }],
+        };
+      }
+
       default:
         return {
           content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
@@ -1273,7 +538,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 function runStartupWarnings(): void {
   if (!SIRR_TOKEN) {
     process.stderr.write(
-      `[sirr-mcp] Warning: SIRR_TOKEN is not set. See sirr.dev/errors#401\n`,
+      `[sirr-mcp] Warning: SIRR_TOKEN is not set. Public dead drops and share links still work, but org-scoped secrets require a token. See sirr.dev/errors#401\n`,
     );
   }
   try {
@@ -1318,7 +583,6 @@ async function runHealthCheck(): Promise<boolean> {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // MCP servers communicate via stdio — no console output here
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

@@ -17,36 +17,38 @@ the Sirr secret vault. Published to npm as `@sirrlock/mcp`.
 
 ```
 src/
-├── index.ts       # MCP server entry: tool registration, SIRR_SERVER / SIRR_TOKEN / SIRR_ORG env vars
-└── sirr.ts        # HTTP client wrapping the full Sirr REST API
+├── index.ts       # MCP server entry: 5 tools, env vars (SIRR_SERVER, SIRR_TOKEN, SIRR_ORG)
+└── helpers.ts     # Pure helpers: parseKeyRef, path builders, formatTtl
 ```
 
-## Tools exposed
+## Tools exposed (5 total)
 
-Secrets: `get_secret`, `push_secret`, `set_secret`, `check_secret`, `patch_secret`, `list_secrets`, `delete_secret`, `prune_secrets`, `health_check`
-Audit: `sirr_audit`
-Webhooks: `sirr_webhook_create`, `sirr_webhook_list`, `sirr_webhook_delete`
-Keys: `sirr_key_list`, `sirr_create_key`, `sirr_delete_key`
-Account: `sirr_me`, `sirr_update_me`
-Orgs: `sirr_org_create`, `sirr_org_list`, `sirr_org_delete`
-Principals: `sirr_principal_create`, `sirr_principal_list`, `sirr_principal_delete`
-Roles: `sirr_role_create`, `sirr_role_list`, `sirr_role_delete`
+| Tool | Description |
+|---|---|
+| `store_secret` | With `name`: org-scoped named secret (requires SIRR_ORG). Without: anonymous dead drop. |
+| `read_secret` | By `id`: public dead drop. By `name`: org-scoped (requires SIRR_ORG). |
+| `check_secret` | Metadata check without consuming a read. |
+| `share_secret` | Burn-after-read link via sirrlock.com. No auth needed. |
+| `audit` | Query the audit log. |
 
-## Push semantics (post-redesign)
+Everything else (webhooks, keys, orgs, roles, principals) is CLI/web-only — not exposed via MCP.
 
-- `push_secret` — anonymous public dead drop. Accepts `{value, ttl_seconds?, max_reads?}`. POSTs to `POST /secrets`. Returns `{id, url}`. No key, no org needed.
-- `set_secret` — org-scoped named secret. Accepts `{org, key, value}`. POSTs to `POST /orgs/{org}/secrets`. Returns `{key, id}`. 409 if key already exists.
-- `get_secret` — two modes: `{id}` fetches `GET /secrets/{id}` (public); `{key, org}` fetches `GET /orgs/{org}/secrets/{key}` (org-scoped).
+## Routing semantics
+
+- `store_secret` without `name` → `POST /secrets` (public dead drop). Returns `{id}`.
+- `store_secret` with `name` → `POST /orgs/{SIRR_ORG}/secrets` (org-scoped). Returns `{key, id}`. 409 if name exists.
+- `read_secret` with `id` → `GET /secrets/{id}` (public).
+- `read_secret` with `name` → `GET /orgs/{SIRR_ORG}/secrets/{name}` (org-scoped).
+- `share_secret` → `POST {SIRRLOCK_URL}/api/public/secret` (sirrlock.com hosted).
 
 ## Key Rules
 
 - Never log or echo secret values in tool output
-- `SIRR_ORG` env var still used by `check_secret`, `list_secrets`, `delete_secret`, `patch_secret`, `prune_secrets`, `sirr_audit`, webhooks
+- `SIRR_ORG` env var is required for named secrets (store/read by name) and audit
 - `SIRR_TOKEN` = master key for full access, or a principal key for org-scoped access
-- `check_secret` / `health_check` do NOT consume a read — safe to call freely
-- `sirr_create_key` and `sirr_webhook_create` return secrets once — instruct user to save immediately
+- `check_secret` does NOT consume a read — safe to call freely
 - Tool descriptions tell Claude not to memorize or repeat retrieved secret values
-- `set_secret` returns 409 Conflict if the key already exists — use `patch_secret` to update
+- `store_secret` with a name returns 409 Conflict if the name already exists
 
 ## Commands
 

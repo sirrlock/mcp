@@ -1,5 +1,5 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
-import { parseKeyRef, formatTtl, secretsPath, auditPath, webhooksPath, prunePath } from "./helpers";
+import { parseKeyRef, formatTtl, secretsPath, auditPath } from "./helpers";
 
 describe("parseKeyRef", () => {
   it("strips sirr: prefix", () => {
@@ -66,48 +66,6 @@ describe("auditPath", () => {
   it("returns /orgs/{org}/audit with SIRR_ORG", () => {
     process.env.SIRR_ORG = "acme";
     expect(auditPath()).toBe("/orgs/acme/audit");
-  });
-});
-
-describe("webhooksPath", () => {
-  afterEach(() => {
-    delete process.env.SIRR_ORG;
-  });
-
-  it("returns /webhooks without SIRR_ORG", () => {
-    delete process.env.SIRR_ORG;
-    expect(webhooksPath()).toBe("/webhooks");
-  });
-
-  it("returns /webhooks/{id} without SIRR_ORG", () => {
-    delete process.env.SIRR_ORG;
-    expect(webhooksPath("wh_123")).toBe("/webhooks/wh_123");
-  });
-
-  it("returns /orgs/{org}/webhooks with SIRR_ORG", () => {
-    process.env.SIRR_ORG = "acme";
-    expect(webhooksPath()).toBe("/orgs/acme/webhooks");
-  });
-
-  it("returns /orgs/{org}/webhooks/{id} with SIRR_ORG", () => {
-    process.env.SIRR_ORG = "acme";
-    expect(webhooksPath("wh_123")).toBe("/orgs/acme/webhooks/wh_123");
-  });
-});
-
-describe("prunePath", () => {
-  afterEach(() => {
-    delete process.env.SIRR_ORG;
-  });
-
-  it("returns /prune without SIRR_ORG", () => {
-    delete process.env.SIRR_ORG;
-    expect(prunePath()).toBe("/prune");
-  });
-
-  it("returns /orgs/{org}/prune with SIRR_ORG", () => {
-    process.env.SIRR_ORG = "acme";
-    expect(prunePath()).toBe("/orgs/acme/prune");
   });
 });
 

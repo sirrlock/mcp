@@ -9,19 +9,22 @@
 [![GitHub stars](https://img.shields.io/github/stars/sirrlock/mcp)](https://github.com/sirrlock/mcp)
 [![Last commit](https://img.shields.io/github/last-commit/sirrlock/mcp)](https://github.com/sirrlock/mcp)
 
-Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) secret vault. Push, read, and manage ephemeral secrets without leaving a conversation.
+Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) secret vault. Store, read, and share ephemeral secrets without leaving a conversation.
 
 ## Demo
 
-### Public dead drop — push and burn
+### Anonymous dead drop — store and burn
 
-**Session 1 — push a secret (value-only, no key needed)**
+**Session 1 — store a secret (no name, no org needed)**
 
 ```
 ❯ stash this deploy token: 123asdzxc
 
-⏺ sirr-mcp - push_secret (MCP)(value: "123asdzxc", max_reads: 1)
-  ⎿  Stored. ID: a1b2c3d4e5f6…  URL: https://sirr.example/secrets/a1b2c3d4e5f6…
+⏺ sirr-mcp - store_secret (MCP)(value: "123asdzxc")
+  ⎿  Secret pushed.
+     ID: a1b2c3d4e5f6…
+     URL: https://sirr.sirrlock.com/s/a1b2c3d4e5f6…
+     Burns after 1 read(s).
 
 ⏺ Stored. Share the URL — it burns after one read.
 ```
@@ -31,7 +34,7 @@ Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) s
 ```
 ❯ get the secret at a1b2c3d4e5f6…
 
-⏺ sirr-mcp - get_secret (MCP)(id: "a1b2c3d4e5f6…")
+⏺ sirr-mcp - read_secret (MCP)(id: "a1b2c3d4e5f6…")
   ⎿  123asdzxc
 
 ⏺ Got it. Deploying to staging with the token. Done.
@@ -42,23 +45,23 @@ Gives AI assistants like Claude direct access to your [Sirr](https://sirr.dev) s
 ```
 ❯ get that secret again
 
-⏺ sirr-mcp - get_secret (MCP)(id: "a1b2c3d4e5f6…")
+⏺ sirr-mcp - read_secret (MCP)(id: "a1b2c3d4e5f6…")
   ⎿  Secret not found, expired, or already burned.
 
 ⏺ The secret no longer exists on the server.
 ```
 
-### Org-scoped named secret — set and get by key
+### Org-scoped named secret — store and read by name
 
 ```
-❯ set the BITBUCKET_TOKEN to 123asdzxc in acme org
+❯ store the BITBUCKET_TOKEN as 123asdzxc
 
-⏺ sirr-mcp - set_secret (MCP)(org: "acme", key: "BITBUCKET_TOKEN", value: "123asdzxc")
-  ⎿  Stored 'BITBUCKET_TOKEN' in org acme.
+⏺ sirr-mcp - store_secret (MCP)(value: "123asdzxc", name: "BITBUCKET_TOKEN")
+  ⎿  Secret 'BITBUCKET_TOKEN' stored in org 'acme'.
 
 ❯ deploy to staging using sirr:BITBUCKET_TOKEN
 
-⏺ sirr-mcp - get_secret (MCP)(key: "BITBUCKET_TOKEN", org: "acme")
+⏺ sirr-mcp - read_secret (MCP)(name: "BITBUCKET_TOKEN")
   ⎿  123asdzxc
 ```
 
@@ -74,7 +77,19 @@ Or use `npx` without a global install — see the configuration block below.
 
 ## Quick start
 
-### Sirr Cloud (recommended)
+### Zero config (public dead drops + share links)
+
+Works immediately. No account, no token, no org needed:
+
+```
+❯ stash this API key: sk-abc123
+⏺ [calls store_secret] → burn URL
+
+❯ share this password with the contractor: hunter2
+⏺ [calls share_secret] → sirrlock.com burn link
+```
+
+### Sirr Cloud (org-scoped named secrets)
 
 1. **Sign up** at [sirrlock.com](https://sirrlock.com/sign-in) — free tier includes 3 seats and unlimited secrets.
 2. **Get your principal key** from the dashboard (Settings → API Keys).
@@ -151,7 +166,7 @@ Point `SIRR_SERVER` at your own `sirrd` instance:
 |---|---|---|
 | `SIRR_SERVER` | `https://sirr.sirrlock.com` | Sirr server URL. Omit for Cloud; set to your instance URL for self-hosted. |
 | `SIRR_TOKEN` | — | Bearer token — a principal key (Cloud or org-scoped) or `SIRR_MASTER_API_KEY` (self-hosted full access) |
-| `SIRR_ORG` | — | Organization ID. Required for Cloud; optional for self-hosted single-tenant usage. |
+| `SIRR_ORG` | — | Organization ID. Required for named secrets (store/read by name). Optional for anonymous dead drops. |
 
 ## CLI flags
 
@@ -170,72 +185,15 @@ SIRR_SERVER=http://localhost:39999 SIRR_TOKEN=your-master-key sirr-mcp --health
 
 ## Available tools
 
-### Secrets
-
 | Tool | Description |
 |---|---|
-| `push_secret(value, ttl_seconds?, max_reads?)` | Anonymous public dead drop — value-only, returns `{id, url}`. No key or org needed. |
-| `set_secret(org, key, value)` | Org-scoped named secret — returns `{key, id}`. 409 Conflict if key already exists; use `patch_secret` to update. |
-| `get_secret(id)` or `get_secret(key, org)` | Dual mode: `id` fetches public dead drop (`GET /secrets/{id}`); `key`+`org` fetches org-scoped (`GET /orgs/{org}/secrets/{key}`) |
-| `check_secret(key)` | Check if a secret exists and inspect its metadata — **without consuming a read** |
-| `patch_secret(key, value?, ttl_seconds?, max_reads?)` | Update an existing secret's value, TTL, or read limit |
-| `list_secrets()` | List all active secrets — metadata only, values never returned |
-| `delete_secret(key)` | Burn a secret immediately, regardless of TTL or read count |
-| `prune_secrets()` | Delete all expired secrets in one sweep |
-| `health_check()` | Verify the Sirr server is reachable and healthy |
+| `store_secret(value, name?, ttl_seconds?, max_reads?)` | Store a secret. With `name`: org-scoped named secret. Without: anonymous burn-after-read dead drop. |
+| `read_secret(id?)` or `read_secret(name?)` | Read a secret. By `id`: public dead drop. By `name`: org-scoped (requires `SIRR_ORG`). |
+| `check_secret(name)` | Check if a secret exists and view metadata — **without consuming a read**. |
+| `share_secret(value)` | Create a burn-after-read link via sirrlock.com. Burns after 1 read or 24h. No account needed. |
+| `audit(since?, action?, limit?)` | Query the audit log — secret creates, reads, deletes. |
 
-### Audit
-
-| Tool | Description |
-|---|---|
-| `sirr_audit(since?, until?, action?, limit?)` | Query the audit log — secret creates, reads, deletes, and key events |
-
-### Webhooks
-
-| Tool | Description |
-|---|---|
-| `sirr_webhook_create(url, events?)` | Register a webhook URL; returns ID and signing secret (shown once) |
-| `sirr_webhook_list()` | List all registered webhooks (signing secrets redacted) |
-| `sirr_webhook_delete(id)` | Remove a webhook by ID |
-
-### Principal keys
-
-| Tool | Description |
-|---|---|
-| `sirr_key_list()` | List all API keys for the current principal |
-| `sirr_create_key(name, valid_for_seconds?, valid_before?)` | Create a new API key; raw key returned once — save it |
-| `sirr_delete_key(keyId)` | Revoke an API key by ID |
-
-### Account (principal-scoped)
-
-| Tool | Description |
-|---|---|
-| `sirr_me()` | Get the current principal's profile, role, and key list |
-| `sirr_update_me(metadata)` | Replace the current principal's metadata |
-
-### Organizations
-
-| Tool | Description |
-|---|---|
-| `sirr_org_create(name, metadata?)` | Create a new organization |
-| `sirr_org_list()` | List all organizations (master key only) |
-| `sirr_org_delete(org_id)` | Delete an organization — must have no principals |
-
-### Principals
-
-| Tool | Description |
-|---|---|
-| `sirr_principal_create(org_id, name, role, metadata?)` | Create a principal (user or service account) in an org |
-| `sirr_principal_list(org_id)` | List all principals in an org |
-| `sirr_principal_delete(org_id, principal_id)` | Delete a principal — must have no active keys |
-
-### Roles
-
-| Tool | Description |
-|---|---|
-| `sirr_role_create(org_id, name, permissions)` | Create a custom role. Permission letters: `r`=read-own `R`=read-org `l`=list-own `L`=list-org `c`=create `C`=create-on-behalf `p`=patch-own `P`=patch-org `a`=account-read `A`=account-read-org `m`=account-manage `M`=manage-org `S`=sirr-admin `d`=delete-own `D`=delete-org |
-| `sirr_role_list(org_id)` | List all roles in an org (built-in and custom) |
-| `sirr_role_delete(org_id, role_name)` | Delete a custom role — must not be in use |
+That's it. Five tools. Everything else (webhooks, keys, orgs, roles, principals) is managed via the [CLI](https://sirr.dev/cli) or [web dashboard](https://sirrlock.com).
 
 ## Inline secret references
 
@@ -250,20 +208,19 @@ The `sirr:KEYNAME` prefix tells Claude to fetch from the vault automatically (re
 
 ## Secret lifecycle
 
-Sirr secrets expire by design. Both `push_secret` and `set_secret` support expiry controls:
+Sirr secrets expire by design. `store_secret` supports expiry controls:
 
 | Option | Behavior |
 |---|---|
 | `ttl_seconds: 3600` | Secret expires after 1 hour, regardless of reads |
-| `max_reads: 1` | Secret is deleted after the first read |
+| `max_reads: 1` | Secret is deleted after the first read (default for anonymous dead drops) |
 | No options | Secret persists until explicitly deleted |
 
 Use `check_secret` to inspect a secret's status without consuming a read — useful when you want to verify a secret is still available before fetching it.
 
 ## Security notes
 
-- Claude only sees secret **values** when you explicitly ask it to fetch via `get_secret`
-- `list_secrets` returns metadata only — values are never included
+- Claude only sees secret **values** when you explicitly ask it to fetch via `read_secret`
 - Set `max_reads=1` on any secret shared for a single AI session
 - The MCP server never logs secret values
 - `SIRR_TOKEN` lives in your MCP config's `env` block — it is never passed as a tool argument or in prompts
@@ -276,10 +233,10 @@ Use `check_secret` to inspect a secret's status without consuming a read — use
 | `Error: Sirr 401` | `SIRR_TOKEN` doesn't match server key | Verify both values match exactly — no extra spaces or newlines. [sirr.dev/errors#401](https://sirr.dev/errors#401) |
 | `Error: Sirr 402` | Free-tier limit reached | Delete unused secrets or upgrade. [sirr.dev/errors#402](https://sirr.dev/errors#402) |
 | `Error: Sirr 403` | Token lacks the required permission | Use a token with the needed scope. [sirr.dev/errors#403](https://sirr.dev/errors#403) |
-| `Error: Sirr 409` | Key already exists (`set_secret`) or resource has dependencies | Use `patch_secret` to update, or delete the secret first. For orgs: remove dependents first. [sirr.dev/errors#409](https://sirr.dev/errors#409) |
-| `Secret '…' not found` | Secret expired, was burned, or key was mistyped | Re-push the secret if you still need it. [sirr.dev/errors#404](https://sirr.dev/errors#404) |
+| `Error: Sirr 409` | Name already exists (`store_secret`) | Delete the existing secret first, or choose a different name. [sirr.dev/errors#409](https://sirr.dev/errors#409) |
+| `Secret '…' not found` | Secret expired, was burned, or name was mistyped | Re-store the secret if you still need it. [sirr.dev/errors#404](https://sirr.dev/errors#404) |
 | `did not respond within 10s` | Sirr server is unreachable | Check `SIRR_SERVER` URL and confirm Sirr is running (`sirr-mcp --health`). |
-| `[sirr-mcp] Warning: SIRR_TOKEN is not set` | Token missing from MCP config | Add `SIRR_TOKEN` to the `env` block in `.mcp.json`. |
+| `[sirr-mcp] Warning: SIRR_TOKEN is not set` | Token missing from MCP config | Add `SIRR_TOKEN` to the `env` block in `.mcp.json`. Anonymous dead drops and share links still work without it. |
 | MCP server not found by Claude | `sirr-mcp` not on PATH | Install globally (`npm install -g @sirrlock/mcp`) or use the `npx` config variant. |
 
 ## Related

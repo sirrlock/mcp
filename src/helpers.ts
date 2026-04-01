@@ -27,7 +27,7 @@ export function publicSecretsPath(id?: string): string {
   return id ? `/secrets/${id}` : '/secrets';
 }
 
-/** Always routes to the org-scoped secrets endpoint. Throws if no org. */
+/** Always routes to the org-scoped secrets endpoint. */
 export function orgSecretsPath(org: string, key?: string): string {
   const base = `/orgs/${org}/secrets`;
   return key ? `${base}/${key}` : base;
@@ -36,17 +36,6 @@ export function orgSecretsPath(org: string, key?: string): string {
 export function auditPath(): string {
   const org = process.env.SIRR_ORG;
   return org ? `/orgs/${org}/audit` : '/audit';
-}
-
-export function webhooksPath(id?: string): string {
-  const org = process.env.SIRR_ORG;
-  const base = org ? `/orgs/${org}/webhooks` : '/webhooks';
-  return id ? `${base}/${id}` : base;
-}
-
-export function prunePath(): string {
-  const org = process.env.SIRR_ORG;
-  return org ? `/orgs/${org}/prune` : '/prune';
 }
 
 /**
