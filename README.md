@@ -69,11 +69,19 @@ The secret existed just long enough to be used. The vault enforces expiry server
 
 ## Install
 
+One-liner for Claude Code:
+
+```bash
+claude mcp add sirr -- npx -y @sirrlock/mcp
+```
+
+Or install globally:
+
 ```bash
 npm install -g @sirrlock/mcp
 ```
 
-Or use `npx` without a global install — see the configuration block below.
+Both methods work with Claude Code, Cursor, Windsurf, and any MCP client.
 
 ## Quick start
 
@@ -109,21 +117,10 @@ Works immediately. No account, no token, no org needed:
 
 No `SIRR_SERVER` needed — defaults to `https://sirr.sirrlock.com`.
 
-```json
-{
-  "mcpServers": {
-    "sirr": {
-      "command": "sirr-mcp",
-      "env": {
-        "SIRR_TOKEN": "your-principal-key",
-        "SIRR_ORG": "your-org-id"
-      }
-    }
-  }
-}
+```bash
+# Claude Code one-liner
+claude mcp add sirr -e SIRR_TOKEN=your-principal-key -e SIRR_ORG=your-org-id -- npx -y @sirrlock/mcp
 ```
-
-Using `npx` without a global install:
 
 ```json
 {
@@ -144,11 +141,17 @@ Using `npx` without a global install:
 
 Point `SIRR_SERVER` at your own `sirrd` instance:
 
+```bash
+# Claude Code one-liner
+claude mcp add sirr -e SIRR_SERVER=http://localhost:39999 -e SIRR_TOKEN=your-master-key -- npx -y @sirrlock/mcp
+```
+
 ```json
 {
   "mcpServers": {
     "sirr": {
-      "command": "sirr-mcp",
+      "command": "npx",
+      "args": ["-y", "@sirrlock/mcp"],
       "env": {
         "SIRR_SERVER": "http://localhost:39999",
         "SIRR_TOKEN": "your-master-api-key"
