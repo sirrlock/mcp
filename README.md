@@ -72,7 +72,7 @@ The secret existed just long enough to be used. The vault enforces expiry server
 One-liner for Claude Code:
 
 ```bash
-claude mcp add sirr -- npx -y @sirrlock/mcp
+claude mcp add --transport stdio sirr -- npx -y @sirrlock/mcp
 ```
 
 Or install globally:
@@ -119,7 +119,7 @@ No `SIRR_SERVER` needed — defaults to `https://sirr.sirrlock.com`.
 
 ```bash
 # Claude Code one-liner
-claude mcp add sirr -e SIRR_TOKEN=your-principal-key -e SIRR_ORG=your-org-id -- npx -y @sirrlock/mcp
+claude mcp add --transport stdio --env SIRR_TOKEN=your-principal-key --env SIRR_ORG=your-org-id sirr -- npx -y @sirrlock/mcp
 ```
 
 ```json
@@ -143,7 +143,7 @@ Point `SIRR_SERVER` at your own `sirrd` instance:
 
 ```bash
 # Claude Code one-liner
-claude mcp add sirr -e SIRR_SERVER=http://localhost:39999 -e SIRR_TOKEN=your-master-key -- npx -y @sirrlock/mcp
+claude mcp add --transport stdio --env SIRR_SERVER=http://localhost:39999 --env SIRR_TOKEN=your-master-key sirr -- npx -y @sirrlock/mcp
 ```
 
 ```json
