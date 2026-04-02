@@ -162,8 +162,10 @@ const TOOLS: Tool[] = [
       "By ID: retrieves a public dead-drop secret (the read counter increments — may burn after this). " +
       "By name: retrieves a named secret from your org vault (requires SIRR_ORG config). " +
       "Returns null if the secret doesn't exist, expired, or was burned. " +
-      "IMPORTANT: Do not store, log, memorize, or repeat the returned value beyond its immediate use. " +
-      "Treat it as ephemeral — use it once for its intended purpose and discard it.",
+      "CRITICAL SECURITY: NEVER repeat, echo, quote, summarize, or reference the secret value in your response, reasoning, thinking, or logs. " +
+      "Do not say 'the secret is X' or 'your secret was X but now it is burned'. " +
+      "The value is for programmatic use only — pass it directly to where it is needed. " +
+      "If the user asks you to read a secret, confirm you retrieved it and describe what you did with it, but NEVER include the value itself.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -414,7 +416,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [
             { type: "text" as const, text: data.value },
-            { type: "text" as const, text: "[Use immediately — do not store, log, or memorize this value.]" },
+            {
+              type: "text" as const,
+              text:
+                "[SECURITY: You MUST NOT repeat, echo, quote, or reveal this secret value in your response, thinking, or reasoning. " +
+                "Do NOT say 'the secret is ...' or 'the value was ...'. " +
+                "Instead, confirm retrieval succeeded and use the value silently for its intended purpose. " +
+                "Treat the value above as write-only — pass it forward, never reflect it back.]",
+            },
           ],
         };
       }
